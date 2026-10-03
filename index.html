@@ -9926,7 +9926,7 @@ class FightScene {
       const events = m.battle.drainEvents();
       if (net.lossy) {
         // canal con pérdidas (room de claude.ai): estado completo compacto y eventos por el canal fiable
-        net.send({ t: 'st', c: 1, s: writeCompact(m) });
+        if (!net.stateEvery || g.frame % net.stateEvery === 0) net.send({ t: 'st', c: 1, s: writeCompact(m) });
         const pe = events.length ? packEvents(events, this.fighters, { compact: true }) : [];
         if (pe.length) net.send({ t: 'ev', e: pe });
       } else net.send({ t: 'st', s: this.writer.write(m), e: events.length ? packEvents(events, this.fighters) : 0 });
@@ -9943,7 +9943,7 @@ class FightScene {
         this._hist = this._hist || [];
         this._hist.push([inp.x, inp.y, inp.mask]); if (this._hist.length > 10) this._hist.shift();
         this._g = (this._g || 0) + 1;
-        net.send({ t: 'in', g: this._g, h: this._hist });
+        if (!net.stateEvery || this._g % net.stateEvery === 0) net.send({ t: 'in', g: this._g, h: this._hist });
       } else {
         const sig = `${inp.x}|${inp.y}|${inp.mask}`;
         if (sig !== this._lastIn) { this._lastIn = sig; net.send({ t: 'in', x: inp.x, y: inp.y, m: inp.mask }); }
@@ -10454,33 +10454,132 @@ class HowToScene {
 __exports.SettingsScene = SettingsScene;
 __exports.HowToScene = HowToScene;
 });
+__def("src/net/Relay.js", function(__exports, __req){
+// Plan B del online: cuando las redes no dejan conexión directa (datos móviles, routers estrictos…), los
+// mensajes del combate viajan por un servidor público de mensajería MQTT (gratuito, sin registro), cada
+// jugador publicando en su "tema" y escuchando el del otro. Va por WebSocket seguro, así que atraviesa
+// cualquier red que tenga internet. Cliente MQTT 3.1.1 mínimo escrito a mano (sin librerías).
+
+const BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
+];
+
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+function str(s) { const b = enc.encode(s); return [b.length >> 8, b.length & 255, ...b]; }
+function varint(n) { const out = []; do { let d = n % 128; n = Math.floor(n / 128); if (n > 0) d |= 128; out.push(d); } while (n > 0); return out; }
+function packet(type, body) { const b = body instanceof Uint8Array ? body : Uint8Array.from(body); const h = [type, ...varint(b.length)]; const out = new Uint8Array(h.length + b.length); out.set(h); out.set(b, h.length); return out; }
+
+class MqttLink {
+  constructor(url) { this.url = url; this.ws = null; this.onMessage = null; this.onDrop = null; this.buf = new Uint8Array(0); this.pid = 1; }
+
+  connect(timeout = 5000) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const fail = (e) => { if (done) return; done = true; clearTimeout(t); try { this.ws && this.ws.close(); } catch { /* nada */ } reject(e); };
+      const t = setTimeout(() => fail(new Error('timeout')), timeout);
+      let ws;
+      try { ws = new WebSocket(this.url, ['mqtt']); } catch (e) { fail(e); return; }
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+      ws.onopen = () => {
+        const id = 'pumas-' + Math.random().toString(36).slice(2, 12);
+        ws.send(packet(0x10, [...str('MQTT'), 4, 0x02, 0, 30, ...str(id)]));
+      };
+      ws.onmessage = (e) => {
+        const data = new Uint8Array(e.data);
+        const all = new Uint8Array(this.buf.length + data.length); all.set(this.buf); all.set(data, this.buf.length);
+        this.buf = all;
+        this._parse((type, body) => {
+          if ((type & 0xf0) === 0x20 && !done) { // CONNACK
+            if (body[1] === 0) { done = true; clearTimeout(t); this._ping = setInterval(() => this._send(packet(0xc0, [])), 20000); resolve(this); } else fail(new Error('broker rechaza'));
+          }
+        });
+      };
+      ws.onerror = () => fail(new Error('no conecta'));
+      ws.onclose = () => { clearInterval(this._ping); if (!done) fail(new Error('cerrado')); else if (this.onDrop) this.onDrop(); };
+    });
+  }
+
+  _parse(onPacket) {
+    for (;;) {
+      const b = this.buf;
+      if (b.length < 2) return;
+      let len = 0, mul = 1, i = 1, byte;
+      do { if (i >= b.length) return; byte = b[i++]; len += (byte & 127) * mul; mul *= 128; } while (byte & 128);
+      if (b.length < i + len) return;
+      const type = b[0] & 0xf0, body = b.subarray(i, i + len);
+      this.buf = b.slice(i + len);
+      if (type === 0x30) { // PUBLISH (QoS 0)
+        const tl = (body[0] << 8) | body[1];
+        const topic = dec.decode(body.subarray(2, 2 + tl));
+        const qos = (b[0] >> 1) & 3;
+        const payload = body.subarray(2 + tl + (qos ? 2 : 0));
+        if (this.onMessage) this.onMessage(topic, dec.decode(payload));
+      } else onPacket(b[0], body);
+    }
+  }
+
+  _send(bytes) { try { if (this.ws && this.ws.readyState === 1) { this.ws.send(bytes); return true; } } catch { /* nada */ } return false; }
+
+  subscribe(topic) {
+    const id = this.pid++;
+    this._send(packet(0x82, [id >> 8, id & 255, ...str(topic), 0]));
+  }
+
+  publish(topic, text) {
+    const t = str(topic), p = enc.encode(text);
+    const body = new Uint8Array(t.length + p.length); body.set(t); body.set(p, t.length);
+    return this._send(packet(0x30, body));
+  }
+
+  get buffered() { return this.ws ? this.ws.bufferedAmount : 0; }
+
+  close() { clearInterval(this._ping); this.onMessage = null; this.onDrop = null; try { this._send(packet(0xe0, [])); this.ws && this.ws.close(); } catch { /* nada */ } this.ws = null; }
+}
+
+// Conecta con el primer servidor que responda (o con uno concreto)
+async function connectBroker(urls) {
+  for (const u of urls) {
+    try { return await new MqttLink(u).connect(); } catch { /* el siguiente */ }
+  }
+  return null;
+}
+
+__exports.MqttLink = MqttLink;
+__exports.connectBroker = connectBroker;
+__exports.BROKERS = BROKERS;
+});
 __def("src/net/Online.js", function(__exports, __req){
 // Partida online con un código de 4 letras, sin servidor propio.
 //
-// Para que dos navegadores se conecten por WebRTC tienen que intercambiarse la "oferta", la "respuesta" y
-// los candidatos de red. Ese intercambio lo hace un servidor de señalización con el protocolo de PeerJS:
-//   · por internet: el servidor público y gratuito de PeerJS (0.peerjs.com), que solo reenvía mensajes;
-//   · en casa con "npm run lan": el propio servidor LAN (tools/lan.mjs) habla el mismo protocolo.
-// El anfitrión se registra con el id "streetpumas-v1-<código>" y el invitado le escribe a ese id.
-// Una vez conectados, el combate va directo entre los dos dispositivos (el servidor ya no interviene).
+// 1) Emparejamiento: servidor de señalización con el protocolo de PeerJS
+//      · por internet: el servidor público y gratuito de PeerJS (0.peerjs.com), que solo reenvía mensajes;
+//      · en casa con "npm run lan": el propio servidor LAN (tools/lan.mjs) habla el mismo protocolo.
+//    El anfitrión se registra con el id "streetpumas-v1-<código>" y el invitado le escribe a ese id.
+// 2) Conexión directa WebRTC entre los dos (lo más rápido).
+// 3) Plan B automático: si en unos segundos no hay conexión directa (datos móviles, routers estrictos…),
+//    los mensajes del combate pasan por un servidor público de mensajería MQTT (ver Relay.js).
 const { NetSession } = __req("src/net/Net.js");
+const { MqttLink, connectBroker, BROKERS } = __req("src/net/Relay.js");
 
 const CLOUD_SIGNAL = { url: 'wss://0.peerjs.com:443/peerjs', key: 'peerjs' };
 const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const hostId = (code) => `streetpumas-v1-${code.toLowerCase()}`;
 const rand = (n) => Math.random().toString(36).slice(2, 2 + n);
+const P2P_WAIT = 6000;      // ms esperando la conexión directa antes de pasar al plan B
+const FAIL_MSG = 'No se ha podido conectar. Revisad que los dos tengáis internet y probad otra vez.';
 
-// STUN para descubrir la IP pública y TURN público (Open Relay) por si las redes no permiten conexión directa
-const ONLINE_ICE = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-  { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
-];
+// STUN para descubrir la IP pública de cada uno (conexión directa)
+const ONLINE_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
 
 function newCode() { let c = ''; for (let i = 0; i < 4; i++) c += LETTERS[Math.floor(Math.random() * LETTERS.length)]; return c; }
 
 // Conexión con el servidor de señalización (WebSocket, protocolo PeerJS)
 class Signal {
-  constructor(server, id) { this.server = server; this.id = id; this.ws = null; this.onMessage = null; this.onDrop = null; }
+  constructor(server, id) { this.server = server; this.id = id; this.ws = null; this.onMessage = null; }
 
   open() {
     return new Promise((resolve, reject) => {
@@ -10499,32 +10598,101 @@ class Signal {
         if (this.onMessage) this.onMessage(m);
       };
       ws.onerror = () => { clearTimeout(timer); fail(new Error('No se puede conectar con el servidor de partidas. ¿Hay internet?')); };
-      ws.onclose = () => { clearTimeout(timer); clearInterval(this._hb); if (!opened) fail(new Error('El servidor de partidas ha cerrado la conexión')); else if (this.onDrop) this.onDrop(); };
+      ws.onclose = () => { clearTimeout(timer); clearInterval(this._hb); if (!opened) fail(new Error('El servidor de partidas ha cerrado la conexión')); };
     });
   }
 
   _raw(obj) { try { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); } catch { /* nada */ } }
   send(type, dst, payload) { this._raw({ type, dst, payload }); }
-  close() { clearInterval(this._hb); this.onMessage = null; this.onDrop = null; try { this.ws && this.ws.close(); } catch { /* nada */ } this.ws = null; }
+  close() { clearInterval(this._hb); this.onMessage = null; try { this.ws && this.ws.close(); } catch { /* nada */ } this.ws = null; }
 }
 
 class OnlineSession extends NetSession {
+  // server: { url, key, ice?, brokers?, forceRelay? }
   constructor(server = CLOUD_SIGNAL) {
     super();
     this.server = server;
+    this.brokers = server.brokers || BROKERS;
     this.sig = null;
     this.peer = null;       // id del otro en el servidor de señalización
     this.pending = [];      // candidatos que llegan antes de la descripción remota
     this.onError = null;
     this.code = null;
+    this.mode = null;       // 'p2p' | 'relay'
+    this.link = null;       // conexión MQTT (plan B)
+    this.relayUrl = null; this.base = null;
+    this.outbox = [];
+    this.onModeInfo = null; // (texto) para enseñar en pantalla qué está pasando
   }
 
+  // por el servidor: estado completo cada 2 frames (el canal puede saltarse mensajes si va cargado)
+  get lossy() { return this.mode === 'relay'; }
+  get stateEvery() { return this.mode === 'relay' ? 2 : 1; }
+
+  get transport() { return this.mode === 'relay' ? 'servidor' : this.mode === 'p2p' ? 'directa' : ''; }
+
+  _info(t) { if (this.onModeInfo) this.onModeInfo(t); }
+  _err(msg) { if (this._failed) return; this._failed = true; clearTimeout(this._wd); clearTimeout(this._p2pTimer); clearInterval(this._hello); if (this.onError) this.onError(new Error(msg)); }
+
+  // ── envío / recepción comunes ──
+  send(msg) {
+    if (!this.open) return false;
+    if (this.mode === 'p2p') return super.send(msg);
+    this.outbox.push(msg);
+    if (!this._queued) { this._queued = true; Promise.resolve().then(() => this._flushRelay()); }
+    return true;
+  }
+
+  _flushRelay() {
+    this._queued = false;
+    if (!this.link || !this.outbox.length) return;
+    const out = this.outbox; this.outbox = [];
+    // si el servidor va atascado, se descartan los estados viejos (llega el siguiente) pero nunca los mensajes de menú
+    const congested = this.link.buffered > 64 * 1024;
+    const list = congested ? out.filter((m) => m.t !== 'st' && m.t !== 'ping') : out;
+    if (list.length) this.link.publish(this.topicOut, JSON.stringify(list));
+  }
+
+  _dispatch(m) {
+    if (m.t === 'ping') { this.send({ t: 'pong', at: m.at }); return; }
+    if (m.t === 'pong') { this.rtt = performance.now() - m.at; return; }
+    const h = this.handlers.get(m.t) || this.handlers.get('*');
+    if (h) h(m);
+  }
+
+  _opened(mode) {
+    if (this.open) return;
+    this.mode = mode;
+    this.open = true;
+    clearTimeout(this._wd); clearTimeout(this._p2pTimer); clearInterval(this._hello);
+    this._ping = setInterval(() => this.send({ t: 'ping', at: performance.now() }), 1000);
+    if (mode === 'relay') {
+      // la conexión directa ya no se usa
+      if (this.pc) { const pc = this.pc; this.pc = null; this.dc = null; try { pc.close(); } catch { /* nada */ } }
+    } else if (this.link) { this.link.close(); this.link = null; }
+    setTimeout(() => { if (this.sig) { this.sig.close(); this.sig = null; } }, 3000);
+    if (this.onOpen) this.onOpen();
+  }
+
+  // ── WebRTC ──
   _pc() {
     super._pc(this.server.ice || ONLINE_ICE);
     this.pc.onicecandidate = (e) => { if (e.candidate && this.peer && this.sig) this.sig.send('CANDIDATE', this.peer, { c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
+    this.pc.onconnectionstatechange = () => {
+      const st = this.pc && this.pc.connectionState;
+      if (st === 'failed' || st === 'closed' || st === 'disconnected') {
+        if (this.open && this.mode === 'p2p') this._closed();
+        else if (!this.open && st === 'failed' && this.role === 'guest') this._startRelay(); // directo imposible: plan B ya
+      }
+    };
   }
 
-  _err(msg) { if (this.onError) this.onError(new Error(msg)); }
+  _wireChannel(dc) {
+    this.dc = dc;
+    dc.onopen = () => this._opened('p2p');
+    dc.onclose = () => { if (this.mode === 'p2p') this._closed(); };
+    dc.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } this._dispatch(m); };
+  }
 
   async _candidate(c) {
     if (!this.pc) return;
@@ -10534,14 +10702,12 @@ class OnlineSession extends NetSession {
 
   async _flush() { const p = this.pending; this.pending = []; for (const c of p) await this._candidate(c); }
 
-  _watchdog() {
+  _watchdog(ms = 30000) {
     clearTimeout(this._wd);
-    this._wd = setTimeout(() => {
-      if (!this.open) this._err('No se ha podido conectar entre los dos dispositivos. Probad otra vez, o uno de los dos con datos móviles.');
-    }, 25000);
+    this._wd = setTimeout(() => { if (!this.open) this._err(FAIL_MSG); }, ms);
   }
 
-  // Anfitrión: reserva un código libre y espera al invitado
+  // ── ANFITRIÓN: reserva un código libre y espera al invitado ──
   async host() {
     this.role = 'host';
     for (let i = 0; i < 6; i++) {
@@ -10551,23 +10717,42 @@ class OnlineSession extends NetSession {
     }
     if (!this.sig) throw new Error('No se ha podido reservar un código. Prueba otra vez.');
     this.sig.onMessage = (m) => this._hostMsg(m);
+    // plan B preparado de antemano: el anfitrión ya escucha en el servidor de mensajería
+    this.base = `streetpumas/v1/${this.code.toLowerCase()}-${rand(8)}`;
+    this.topicOut = this.base + '/h2g'; this.topicIn = this.base + '/g2h';
+    this._relayReady = connectBroker(this.brokers).then((link) => {
+      if (!link) return null;
+      if (this._closedForGood || this.open) { link.close(); return null; }
+      this.link = link; this.relayUrl = link.url;
+      link.subscribe(this.topicIn);
+      link.onMessage = (topic, text) => this._relayIn(text);
+      link.onDrop = () => { if (this.mode === 'relay' && this.open) this._closed(); else this.link = null; };
+      return link;
+    });
     return this.code;
   }
 
   async _hostMsg(m) {
     const p = m.payload || {};
     if (m.type === 'OFFER') {
-      if (this.pc) return; // ya hay un invitado
+      if (this.peer && this.peer !== m.src && (this.pc || this.open)) return; // ya hay un invitado
       this.peer = m.src;
-      this._pc();
-      this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
-      try {
-        await this.pc.setRemoteDescription(p.sdp);
-        await this._flush();
-        await this.pc.setLocalDescription(await this.pc.createAnswer());
-        this.sig.send('ANSWER', this.peer, { sdp: this.pc.localDescription });
-        this._watchdog();
-      } catch (e) { this._err('Error al conectar: ' + (e.message || e)); }
+      // dónde está el plan B (espera un poco si el servidor de mensajería aún está conectando)
+      await Promise.race([this._relayReady, new Promise((r) => setTimeout(r, 4000))]);
+      const answer = { relay: this.relayUrl, base: this.base };
+      if (p.sdp) {
+        if (this.pc) this._resetGuest(true);
+        this._pc();
+        this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
+        try {
+          await this.pc.setRemoteDescription(p.sdp);
+          await this._flush();
+          await this.pc.setLocalDescription(await this.pc.createAnswer());
+          answer.sdp = this.pc.localDescription;
+        } catch (e) { answer.sdp = null; }
+      }
+      this.sig.send('ANSWER', this.peer, answer);
+      this._info('Conectando…');
     } else if (m.type === 'CANDIDATE' && m.src === this.peer) {
       this._candidate(p.c);
     } else if (m.type === 'LEAVE' && m.src === this.peer && !this.open) {
@@ -10575,13 +10760,33 @@ class OnlineSession extends NetSession {
     }
   }
 
-  // el invitado se fue antes de conectar: se vuelve a esperar con el mismo código
-  _resetGuest() {
-    try { this.pc && this.pc.close(); } catch { /* nada */ }
-    this.pc = null; this.dc = null; this.peer = null; this.pending = [];
+  _relayIn(text) {
+    let list; try { list = JSON.parse(text); } catch { return; }
+    for (const m of Array.isArray(list) ? list : [list]) {
+      if (m.t === 'hello') {
+        // el invitado pide ir por el servidor: se le confirma (también si se perdió la confirmación anterior)
+        if (!this.open || this.mode === 'relay') {
+          this.link.publish(this.topicOut, JSON.stringify([{ t: 'ack' }]));
+          this._opened('relay');
+        }
+        continue;
+      }
+      if (m.t === 'ack') {
+        if (!this.open) this._opened('relay');
+        continue;
+      }
+      if (this.mode === 'relay') this._dispatch(m);
+    }
   }
 
-  // Invitado: se conecta al anfitrión con su código
+  // el invitado se fue antes de conectar: se vuelve a esperar con el mismo código
+  _resetGuest(keepPeer = false) {
+    try { this.pc && this.pc.close(); } catch { /* nada */ }
+    this.pc = null; this.dc = null; this.pending = [];
+    if (!keepPeer) this.peer = null;
+  }
+
+  // ── INVITADO: se conecta al anfitrión con su código ──
   async join(code) {
     code = String(code || '').trim().toUpperCase();
     if (!/^[A-Z]{4}$/.test(code)) throw new Error('El código son 4 letras');
@@ -10591,19 +10796,28 @@ class OnlineSession extends NetSession {
     await this.sig.open();
     this.peer = hostId(code);
     this.sig.onMessage = (m) => this._guestMsg(m);
-    this._pc();
-    this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
-    await this.pc.setLocalDescription(await this.pc.createOffer());
-    this.sig.send('OFFER', this.peer, { sdp: this.pc.localDescription });
-    this._watchdog();
+    let sdp = null;
+    if (!this.server.forceRelay && typeof RTCPeerConnection === 'function') {
+      this._pc();
+      this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
+      await this.pc.setLocalDescription(await this.pc.createOffer());
+      sdp = this.pc.localDescription;
+    }
+    this.sig.send('OFFER', this.peer, { sdp });
+    this._watchdog(40000);
   }
 
   async _guestMsg(m) {
     const p = m.payload || {};
     if (m.type === 'ANSWER' && m.src === this.peer) {
-      // solo se aplica una vez y en el estado correcto (evita "called in wrong state: stable")
-      if (!this.pc || this.pc.signalingState !== 'have-local-offer') return;
-      try { await this.pc.setRemoteDescription(p.sdp); await this._flush(); } catch (e) { this._err('Error al conectar: ' + (e.message || e)); }
+      if (this._answered) return; // solo la primera respuesta (evita "called in wrong state: stable")
+      this._answered = true;
+      this.relayUrl = p.relay || null; this.base = p.base || null;
+      if (this.base) { this.topicOut = this.base + '/g2h'; this.topicIn = this.base + '/h2g'; }
+      if (p.sdp && this.pc && this.pc.signalingState === 'have-local-offer') {
+        try { await this.pc.setRemoteDescription(p.sdp); await this._flush(); } catch { /* se intentará el plan B */ }
+        this._p2pTimer = setTimeout(() => this._startRelay(), P2P_WAIT);
+      } else this._startRelay();
     } else if (m.type === 'CANDIDATE' && m.src === this.peer) {
       this._candidate(p.c);
     } else if (m.type === 'EXPIRE' && m.src === this.peer && !this.open) {
@@ -10613,33 +10827,45 @@ class OnlineSession extends NetSession {
     }
   }
 
-  _wireChannel(dc) {
-    super._wireChannel(dc);
-    const prev = dc.onopen;
-    dc.onopen = () => {
-      clearTimeout(this._wd);
-      // ya no hace falta el servidor de señalización
-      setTimeout(() => { if (this.sig) { this.sig.close(); this.sig = null; } }, 3000);
-      prev && prev();
-    };
+  async _startRelay() {
+    if (this.open || this._relayStarted || this._failed) return;
+    this._relayStarted = true;
+    clearTimeout(this._p2pTimer);
+    if (!this.relayUrl || !this.base) { this._err(FAIL_MSG); return; }
+    this._info('Sin conexión directa: conectando por servidor…');
+    const link = await new MqttLink(this.relayUrl).connect(8000).catch(() => null);
+    if (!link) { if (!this.open) this._err(FAIL_MSG); return; }
+    if (this.open) { link.close(); return; } // mientras tanto conectó directo
+    this.link = link;
+    link.subscribe(this.topicIn);
+    link.onMessage = (topic, text) => this._relayIn(text);
+    link.onDrop = () => { if (this.mode === 'relay' && this.open) this._closed(); };
+    const hello = () => link.publish(this.topicOut, JSON.stringify([{ t: 'hello' }]));
+    hello();
+    this._hello = setInterval(hello, 400);
+    this._watchdog(15000);
   }
 
   _closed() {
-    clearTimeout(this._wd);
-    if (!this.open && this.pc) {
-      // falló antes de conectar: el anfitrión sigue esperando con su código; el invitado recibe el aviso
-      if (this.role === 'host') { this._resetGuest(); return; }
-      super._closed();
-      this._err('No se ha podido conectar entre los dos dispositivos. Probad otra vez, o uno de los dos con datos móviles.');
-      return;
-    }
-    super._closed();
+    clearTimeout(this._wd); clearTimeout(this._p2pTimer); clearInterval(this._hello); clearInterval(this._ping);
+    if (!this.open) return;
+    this.open = false;
+    try { this.dc && this.dc.close(); } catch { /* nada */ }
+    try { this.pc && this.pc.close(); } catch { /* nada */ }
+    if (this.link) { this.link.close(); this.link = null; }
+    this.pc = null; this.dc = null;
+    if (this.onClose) this.onClose();
   }
 
   close() {
-    clearTimeout(this._wd);
+    this._closedForGood = true;
+    this.onClose = null;
+    clearTimeout(this._wd); clearTimeout(this._p2pTimer); clearInterval(this._hello); clearInterval(this._ping);
     if (this.sig) { this.sig.close(); this.sig = null; }
-    super.close();
+    if (this.link) { this.link.close(); this.link = null; }
+    try { this.dc && this.dc.close(); } catch { /* nada */ }
+    try { this.pc && this.pc.close(); } catch { /* nada */ }
+    this.pc = null; this.dc = null; this.open = false;
   }
 }
 
@@ -10804,7 +11030,12 @@ class LanScene {
     this.webrtc = typeof RTCPeerConnection === 'function';
     // servidor de señalización: ?signal=ws://… (pruebas) → servidor LAN de casa → el público de PeerJS
     let forced = null;
-    try { const q = new URLSearchParams(location.search).get('signal'); if (q) forced = { url: q, key: 'peerjs' }; } catch { /* nada */ }
+    try {
+      const q = new URLSearchParams(location.search);
+      if (q.get('signal')) forced = { url: q.get('signal'), key: 'peerjs' };
+      if (forced && q.get('broker')) forced.brokers = [q.get('broker')];
+      if (forced && q.get('relayonly')) forced.forceRelay = true;
+    } catch { /* nada */ }
     this.signal = forced || CLOUD_SIGNAL;
     // dentro de claude.ai: sala compartida del artefacto
     const use = typeof window !== 'undefined' && window.claude && typeof window.claude.use === 'function' ? window.claude.use('room') : null;
@@ -10853,7 +11084,7 @@ class LanScene {
       if (!ok || this.room) return;
       this.server = true;
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      this.signal = { url: `${proto}//${location.host}/peerjs`, key: 'peerjs' };
+      this.signal = { url: `${proto}//${location.host}/peerjs`, key: 'peerjs', brokers: [`${proto}//${location.host}/mqtt`] };
       this.status = 'Servidor de casa encontrado: código de 4 letras sin necesidad de internet.';
     });
   }
@@ -10888,6 +11119,7 @@ class LanScene {
     });
     g.session = { mode: 'lan' };
     g.audio.play('select');
+    if (net.transport) g.input.pads.toast = { text: net.transport === 'directa' ? 'CONECTADOS · CONEXIÓN DIRECTA' : 'CONECTADOS · POR SERVIDOR', t: 150 };
     if (net.role === 'host') {
       net.send({ t: 'go', scene: 'select', params: { mode: 'lan' } });
       g.goto('select', { mode: 'lan' });
@@ -10904,6 +11136,7 @@ class LanScene {
     const net = new OnlineSession(this.signal);
     net.onOpen = () => this._connected(net);
     net.onError = (e) => this._fail(e);
+    net.onModeInfo = (t) => { this.status = t; };
     Net.session = net;
     this.status = 'Creando la partida…';
     try {
@@ -10976,6 +11209,7 @@ class LanScene {
         const net = new OnlineSession(this.signal);
         net.onOpen = () => this._connected(net);
         net.onError = (e) => { if (Net.session === net) { net.close(); Net.session = null; } this._fail(e); };
+        net.onModeInfo = (t) => { this.panel && this.panel.setStatus(t); };
         Net.session = net;
         try {
           this.panel && this.panel.setStatus('Buscando la partida…');
