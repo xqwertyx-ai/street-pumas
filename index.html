@@ -536,10 +536,11 @@ class Game {
     this.last = 0;
     this.running = false;
     this.fps = 60;
-    this._fpsAcc = 0; this._fpsFrames = 0;
+    this._fpsAcc = 0; this._fpsFrames = 0; this._msUpdate = 0; this._msRender = 0; this._msN = 0; this.msUpdate = 0; this.msRender = 0; this._needsDraw = true;
     this.transition = null; // { t, dur, to, params, swapped }
     this.paused = false;   // pausa global (pestaña oculta)
     this._tick = this._tick.bind(this);
+    window.addEventListener('resize', () => { this._needsDraw = true; });
     document.addEventListener('visibilitychange', () => {
       this.paused = document.hidden;
       if (!document.hidden) this.last = performance.now();
@@ -586,17 +587,33 @@ class Game {
     let dt = now - this.last;
     this.last = now;
     if (dt > 250) dt = this.step; // tras pausas largas no recuperamos frames
+    // el reloj del navegador tiene jitter de ~±1 ms: se ajusta a múltiplos exactos de 1/60 s para que no se
+    // salte ni se duplique ningún frame lógico (microtirones típicos con acumulador)
+    const n = Math.round(dt / this.step);
+    if (n >= 1 && n <= 4 && Math.abs(dt - n * this.step) < 2) dt = n * this.step;
     this.acc += dt;
     let steps = 0;
-    while (this.acc >= this.step && steps < 4) {
+    const t0 = performance.now();
+    while (this.acc >= this.step - 0.25 && steps < 4) {
       this.update();
       this.acc -= this.step;
       steps++;
     }
+    if (this.acc < 0) this.acc = 0;
     if (steps === 4) this.acc = 0;
+    const t1 = performance.now();
     this._fpsAcc += dt; this._fpsFrames++;
-    if (this._fpsAcc >= 500) { this.fps = Math.round((this._fpsFrames * 1000) / this._fpsAcc); this._fpsAcc = 0; this._fpsFrames = 0; }
-    this.render();
+    // pantallas de más de 60 Hz (120/144/240): si no hay nada nuevo que enseñar no se vuelve a pintar
+    if (steps > 0 || this._needsDraw) {
+      this.render();
+      this._needsDraw = false;
+      this._msUpdate += t1 - t0; this._msRender += performance.now() - t1; this._msN++;
+    }
+    if (this._fpsAcc >= 500) {
+      this.fps = Math.round((this._fpsFrames * 1000) / this._fpsAcc);
+      this.msUpdate = this._msN ? this._msUpdate / this._msN : 0; this.msRender = this._msN ? this._msRender / this._msN : 0;
+      this._fpsAcc = 0; this._fpsFrames = 0; this._msUpdate = 0; this._msRender = 0; this._msN = 0;
+    }
   }
 
   update() {
@@ -10683,7 +10700,7 @@ async function boot() {
 
   renderer.overlays.push((ctx) => input.touch.render(ctx));
   renderer.overlays.push((ctx, g) => {
-    if (Storage.settings.showFps) text(ctx, `${g.fps} FPS`, GAME.width - 8, GAME.height - 30, { size: 12, align: 'right', color: '#8af59b', lw: 3 });
+    if (Storage.settings.showFps) text(ctx, `${g.fps} FPS · upd ${g.msUpdate.toFixed(1)} · draw ${g.msRender.toFixed(1)} ms`, GAME.width - 8, GAME.height - 30, { size: 12, align: 'right', color: '#8af59b', lw: 3 });
     if (renderer.portrait && input.touch.isTouchDevice) {
       ctx.fillStyle = 'rgba(5,2,10,0.88)'; ctx.fillRect(0, 0, GAME.width, GAME.height);
       text(ctx, '↻ Gira el móvil para jugar en horizontal', GAME.width / 2, GAME.height / 2, { size: 30, color: '#ffcf3a', lw: 5 });
