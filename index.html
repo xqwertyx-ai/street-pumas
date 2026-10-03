@@ -3992,7 +3992,7 @@ const character = {
   specials: [
     {
       // CABALLITO A DOS RUEDAS: levanta la silla sobre las ruedas traseras y embiste
-      id: 'caballito', name: 'Caballito a dos ruedas', say: '¡Caballito!', input: { dir: 'neutral', motion: '236', button: 'H' },
+      id: 'caballito', name: 'Caballito a dos ruedas', say: '¡Caballito!', input: { dir: 'forward', motion: '236', button: 'H' },
       anim: 'drive', vehicle: ['wheelie', 'wheelie'], startup: 14, active: 26, recovery: 24,
       damage: 98, hitstun: 24, blockstun: 16, knockback: 6, hitstop: 'heavy', shake: 5,
       hitbox: { x: 0, y: -170, w: 110, h: 150 }, knockdown: true, launch: { vx: 5, vy: -7 }, hitSfx: 'hit_heavy',
@@ -5709,7 +5709,8 @@ function drawAccessory(ctx, cx, cy, L, pal) {
       ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 5;
       ctx.beginPath(); ctx.arc(cx - 2, cy - 2, HR + 3, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke();
       ctx.fillStyle = pal.accent; ctx.strokeStyle = OUT; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.ellipse(cx - 14, cy + 2, 7, 10, 0, 0, 6.2832); ctx.fill(); ctx.stroke();
+      // auricular en la nuca (detrás de la oreja) para no tapar la cara
+      ctx.beginPath(); ctx.ellipse(cx - (L.phonesX ?? 21), cy + 1, 5.5, 9, 0, 0, 6.2832); ctx.fill(); ctx.stroke();
       break;
     case 'backcap':
       ctx.fillStyle = pal.accent;
@@ -6651,7 +6652,7 @@ class TitleScene {
       { label: 'VS CPU', action: go('vscpu') },
       { label: '2 JUGADORES', action: go('versus') },
       { label: 'ENTRENAMIENTO', action: go('training') },
-      { label: 'LAN · 2 DISPOSITIVOS', action: () => g.goto('lan') },
+      { label: 'ONLINE · 2 DISPOSITIVOS', action: () => g.goto('lan') },
       { label: 'CÓMO SE JUEGA', action: () => g.goto('howto') },
       { label: 'AJUSTES', action: () => g.goto('settings') },
     ], { y: 222, w: 320, h: 34, gap: 6 });
@@ -6820,31 +6821,13 @@ async function decodeSignal(code) {
   return { type: t, sdp: s.split('\n').join('\r\n') + (s.endsWith('\n') ? '' : '\r\n') };
 }
 
-// ── servidor LAN opcional (tools/lan.mjs): solo hace de buzón para la invitación y la respuesta ──
+// ── servidor LAN opcional (tools/lan.mjs): sirve el juego y hace de servidor de señalización en casa ──
 const LanServer = {
   async available() {
     try {
       const r = await fetch('/api/lan/ping', { cache: 'no-store' });
       return r.ok && (await r.json()).ok === true;
     } catch { return false; }
-  },
-  async create(offer) {
-    const r = await fetch('/api/lan/room', { method: 'POST', body: offer });
-    return (await r.json()).code;
-  },
-  async getOffer(code) {
-    const r = await fetch(`/api/lan/room/${code}/offer`, { cache: 'no-store' });
-    if (!r.ok) throw new Error('No existe esa partida');
-    return r.text();
-  },
-  async answer(code, answer) { await fetch(`/api/lan/room/${code}/answer`, { method: 'POST', body: answer }); },
-  async waitAnswer(code, isCancelled) {
-    while (!isCancelled()) {
-      const r = await fetch(`/api/lan/room/${code}/answer`, { cache: 'no-store' });
-      if (r.status === 200) return r.text();
-      await new Promise((res) => setTimeout(res, 600));
-    }
-    return null;
   },
 };
 
@@ -6869,8 +6852,8 @@ class NetSession {
     try { this.dc.send(JSON.stringify(msg)); return true; } catch { return false; }
   }
 
-  _pc() {
-    this.pc = new RTCPeerConnection({ iceServers: ICE });
+  _pc(ice = ICE) {
+    this.pc = new RTCPeerConnection({ iceServers: ice });
     this.pc.onconnectionstatechange = () => {
       const st = this.pc && this.pc.connectionState;
       if (st === 'failed' || st === 'closed' || st === 'disconnected') this._closed();
@@ -6917,6 +6900,9 @@ class NetSession {
   async acceptAnswer(code) {
     const desc = await decodeSignal(code);
     if (desc.type !== 'answer') throw new Error('Eso no es una respuesta: pega el código que te devuelve el invitado');
+    if (!this.pc) throw new Error('La invitación ha caducado: crea la partida otra vez');
+    // la respuesta solo se puede aplicar una vez (pegarla dos veces daba "called in wrong state: stable")
+    if (this.pc.signalingState !== 'have-local-offer') { if (this.open) return; throw new Error('Esta invitación ya se ha usado: crea la partida otra vez'); }
     await this.pc.setRemoteDescription(desc);
   }
 
@@ -10258,6 +10244,38 @@ function toggleFullscreen() {
 __exports.isFullscreen = isFullscreen;
 __exports.toggleFullscreen = toggleFullscreen;
 });
+__def("src/ui/askText.js", function(__exports, __req){
+// Pequeño cuadro HTML para escribir un texto (p. ej. el código secreto). Devuelve una promesa con el texto o null.
+function askText({ title, label, placeholder = '', button = 'OK' }) {
+  return new Promise((resolve) => {
+    const el = document.createElement('div');
+    el.className = 'ask-panel';
+    el.innerHTML = `<style>
+      .ask-panel{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(5,2,14,.75);font:16px/1.35 ui-monospace,Menlo,Consolas,monospace;color:#f2ecff}
+      .ask-panel .box{width:min(440px,calc(100vw - 32px));background:#140a2a;border:3px solid #ffcf3a;box-shadow:0 0 0 3px #05020a,0 10px 40px rgba(0,0,0,.6);padding:18px}
+      .ask-panel h2{margin:0 0 10px;font-size:20px;letter-spacing:2px;color:#ffcf3a}
+      .ask-panel label{display:block;margin:6px 0 8px;color:#cfc6e6}
+      .ask-panel input{width:100%;box-sizing:border-box;background:#05020a;color:#fff;border:2px solid #6a4ab0;padding:10px;font:inherit;font-size:22px;letter-spacing:3px;text-align:center}
+      .ask-panel .row{display:flex;gap:8px;margin-top:12px}
+      .ask-panel button{flex:1;min-height:46px;background:#6a2ab0;color:#fff;border:2px solid #ffcf3a;font:inherit;font-weight:700;letter-spacing:1px;cursor:pointer}
+      .ask-panel button.sec{background:#20202a;border-color:#6a6a7a}
+    </style><div class="box"><h2></h2><label></label><input autocomplete="off" autocapitalize="off" spellcheck="false"><div class="row"><button class="sec">CANCELAR</button><button class="ok"></button></div></div>`;
+    el.querySelector('h2').textContent = title;
+    el.querySelector('label').textContent = label;
+    el.querySelector('.ok').textContent = button;
+    const inp = el.querySelector('input'); inp.placeholder = placeholder;
+    const done = (v) => { el.remove(); resolve(v); };
+    el.querySelector('.sec').onclick = () => done(null);
+    el.querySelector('.ok').onclick = () => done(inp.value);
+    el.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') done(inp.value); if (e.key === 'Escape') done(null); });
+    el.addEventListener('keyup', (e) => e.stopPropagation());
+    document.body.appendChild(el);
+    setTimeout(() => { try { inp.focus(); } catch { /* nada */ } }, 50);
+  });
+}
+
+__exports.askText = askText;
+});
 __def("src/scenes/SettingsScene.js", function(__exports, __req){
 const { GAME } = __req("src/config/game.config.js");
 const { Menu, menuBackground, titleText, text, COLORS, panel } = __req("src/ui/draw.js");
@@ -10265,6 +10283,10 @@ const { DIFFICULTY, DIFFICULTY_ORDER } = __req("src/config/difficulty.config.js"
 const { BUTTON_LABELS, KEYBOARD } = __req("src/config/controls.config.js");
 const { Storage } = __req("src/utils/storage.js");
 const { isFullscreen, toggleFullscreen } = __req("src/utils/fullscreen.js");
+const { askText } = __req("src/ui/askText.js");
+const { BOSSES } = __req("src/characters/index.js");
+
+const SECRET = 'pumas2026';
 
 const REMAP = ['up', 'down', 'left', 'right', 'L', 'H', 'K', 'S', 'X', 'B'];
 const PAD_REMAP = ['L', 'H', 'K', 'S', 'X', 'B', 'pause'];
@@ -10295,9 +10317,28 @@ class SettingsScene {
         if (!g.input.pads.count) { g.audio.play('menu_back'); this.padMsg = 90; return; }
         this.padRemap = 0; this.newPad = {}; this.waitRelease = true;
       } },
+      { label: 'Código secreto', value: () => (BOSSES.every((b) => S.isUnlocked(b.id)) ? 'Todo abierto' : ''), action: () => this._secret() },
       { label: 'Restablecer ajustes', action: () => { const u = S.load().unlocks; S.reset(); S.load().unlocks.push(...u); S.save(); g.input.setKeyboardOverride(null); g.audio.applyVolumes(); } },
       { label: 'VOLVER', action: () => g.goto('title') },
-    ], { y: 80, w: 470, h: 30, gap: 3, onBack: () => g.goto('title') });
+    ], { y: 78, w: 470, h: 28, gap: 2, onBack: () => g.goto('title') });
+  }
+
+  async _secret() {
+    const g = this.game;
+    if (this.asking) return;
+    this.asking = true;
+    const v = await askText({ title: 'CÓDIGO SECRETO', label: 'Escribe el código para desbloquear todo el contenido', button: 'DESBLOQUEAR' });
+    this.asking = false;
+    g.input.clearMenuEdges();
+    if (v === null) return;
+    if (v.trim().toLowerCase().replace(/\s+/g, '') === SECRET) {
+      for (const b of BOSSES) Storage.unlock(b.id);
+      g.audio.play('ko');
+      this.msg = { text: '¡CÓDIGO CORRECTO! TODOS LOS JEFES DESBLOQUEADOS', color: '#8af59b', t: 200 };
+    } else {
+      g.audio.play('menu_back');
+      this.msg = { text: 'CÓDIGO INCORRECTO', color: '#ff8a8a', t: 120 };
+    }
   }
 
   _padStatus() {
@@ -10311,6 +10352,8 @@ class SettingsScene {
     this.t++;
     const g = this.game;
     if (this.padMsg) this.padMsg--;
+    if (this.msg && --this.msg.t <= 0) this.msg = null;
+    if (this.asking) return;
     if (this.padRemap >= 0) {
       const b = g.input.pads.anyPressed();
       if (this.waitRelease) { if (b < 0) this.waitRelease = false; return; }
@@ -10363,6 +10406,10 @@ class SettingsScene {
       titleText(ctx, BUTTON_LABELS[PAD_REMAP[this.padRemap]].toUpperCase(), W / 2, 280, 54);
       text(ctx, `${this.padRemap + 1} / ${PAD_REMAP.length}`, W / 2, 322, { size: 14, color: COLORS.dim });
     }
+    if (this.msg) {
+      ctx.fillStyle = 'rgba(5,2,10,0.85)'; ctx.fillRect(W / 2 - 330, GAME.height / 2 - 34, 660, 68);
+      text(ctx, this.msg.text, W / 2, GAME.height / 2, { size: 20, color: this.msg.color, lw: 4, maxW: 640 });
+    }
     if (this.padMsg) {
       const p = this.game.input.pads;
       text(ctx, p.blocked ? 'Esta ventana no deja usar mandos: abre el juego en su propia pestaña' : 'Conecta un mando y pulsa cualquier botón', W / 2, GAME.height - 20, { size: 15, color: COLORS.gold, lw: 3 });
@@ -10406,6 +10453,200 @@ class HowToScene {
 
 __exports.SettingsScene = SettingsScene;
 __exports.HowToScene = HowToScene;
+});
+__def("src/net/Online.js", function(__exports, __req){
+// Partida online con un código de 4 letras, sin servidor propio.
+//
+// Para que dos navegadores se conecten por WebRTC tienen que intercambiarse la "oferta", la "respuesta" y
+// los candidatos de red. Ese intercambio lo hace un servidor de señalización con el protocolo de PeerJS:
+//   · por internet: el servidor público y gratuito de PeerJS (0.peerjs.com), que solo reenvía mensajes;
+//   · en casa con "npm run lan": el propio servidor LAN (tools/lan.mjs) habla el mismo protocolo.
+// El anfitrión se registra con el id "streetpumas-v1-<código>" y el invitado le escribe a ese id.
+// Una vez conectados, el combate va directo entre los dos dispositivos (el servidor ya no interviene).
+const { NetSession } = __req("src/net/Net.js");
+
+const CLOUD_SIGNAL = { url: 'wss://0.peerjs.com:443/peerjs', key: 'peerjs' };
+const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const hostId = (code) => `streetpumas-v1-${code.toLowerCase()}`;
+const rand = (n) => Math.random().toString(36).slice(2, 2 + n);
+
+// STUN para descubrir la IP pública y TURN público (Open Relay) por si las redes no permiten conexión directa
+const ONLINE_ICE = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
+];
+
+function newCode() { let c = ''; for (let i = 0; i < 4; i++) c += LETTERS[Math.floor(Math.random() * LETTERS.length)]; return c; }
+
+// Conexión con el servidor de señalización (WebSocket, protocolo PeerJS)
+class Signal {
+  constructor(server, id) { this.server = server; this.id = id; this.ws = null; this.onMessage = null; this.onDrop = null; }
+
+  open() {
+    return new Promise((resolve, reject) => {
+      let opened = false;
+      const url = `${this.server.url}?key=${encodeURIComponent(this.server.key || 'peerjs')}&id=${encodeURIComponent(this.id)}&token=${rand(10)}&version=1.5.4`;
+      let ws;
+      try { ws = new WebSocket(url); } catch (e) { reject(new Error('No se puede conectar con el servidor de partidas')); return; }
+      this.ws = ws;
+      const fail = (err) => { if (!opened) { opened = true; reject(err); try { ws.close(); } catch { /* nada */ } } };
+      const timer = setTimeout(() => fail(new Error('El servidor de partidas no responde. ¿Hay internet?')), 10000);
+      ws.onmessage = (e) => {
+        let m; try { m = JSON.parse(e.data); } catch { return; }
+        if (m.type === 'OPEN') { opened = true; clearTimeout(timer); this._hb = setInterval(() => this._raw({ type: 'HEARTBEAT' }), 5000); resolve(); return; }
+        if (m.type === 'ID-TAKEN') { clearTimeout(timer); const er = new Error('Código ocupado'); er.taken = true; fail(er); return; }
+        if (m.type === 'ERROR') { clearTimeout(timer); fail(new Error((m.payload && m.payload.msg) || 'Error del servidor de partidas')); return; }
+        if (this.onMessage) this.onMessage(m);
+      };
+      ws.onerror = () => { clearTimeout(timer); fail(new Error('No se puede conectar con el servidor de partidas. ¿Hay internet?')); };
+      ws.onclose = () => { clearTimeout(timer); clearInterval(this._hb); if (!opened) fail(new Error('El servidor de partidas ha cerrado la conexión')); else if (this.onDrop) this.onDrop(); };
+    });
+  }
+
+  _raw(obj) { try { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); } catch { /* nada */ } }
+  send(type, dst, payload) { this._raw({ type, dst, payload }); }
+  close() { clearInterval(this._hb); this.onMessage = null; this.onDrop = null; try { this.ws && this.ws.close(); } catch { /* nada */ } this.ws = null; }
+}
+
+class OnlineSession extends NetSession {
+  constructor(server = CLOUD_SIGNAL) {
+    super();
+    this.server = server;
+    this.sig = null;
+    this.peer = null;       // id del otro en el servidor de señalización
+    this.pending = [];      // candidatos que llegan antes de la descripción remota
+    this.onError = null;
+    this.code = null;
+  }
+
+  _pc() {
+    super._pc(this.server.ice || ONLINE_ICE);
+    this.pc.onicecandidate = (e) => { if (e.candidate && this.peer && this.sig) this.sig.send('CANDIDATE', this.peer, { c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
+  }
+
+  _err(msg) { if (this.onError) this.onError(new Error(msg)); }
+
+  async _candidate(c) {
+    if (!this.pc) return;
+    if (!this.pc.remoteDescription) { this.pending.push(c); return; }
+    try { await this.pc.addIceCandidate(c); } catch { /* candidato no válido: se ignora */ }
+  }
+
+  async _flush() { const p = this.pending; this.pending = []; for (const c of p) await this._candidate(c); }
+
+  _watchdog() {
+    clearTimeout(this._wd);
+    this._wd = setTimeout(() => {
+      if (!this.open) this._err('No se ha podido conectar entre los dos dispositivos. Probad otra vez, o uno de los dos con datos móviles.');
+    }, 25000);
+  }
+
+  // Anfitrión: reserva un código libre y espera al invitado
+  async host() {
+    this.role = 'host';
+    for (let i = 0; i < 6; i++) {
+      const code = newCode();
+      const sig = new Signal(this.server, hostId(code));
+      try { await sig.open(); this.sig = sig; this.code = code; break; } catch (e) { if (!e.taken) throw e; }
+    }
+    if (!this.sig) throw new Error('No se ha podido reservar un código. Prueba otra vez.');
+    this.sig.onMessage = (m) => this._hostMsg(m);
+    return this.code;
+  }
+
+  async _hostMsg(m) {
+    const p = m.payload || {};
+    if (m.type === 'OFFER') {
+      if (this.pc) return; // ya hay un invitado
+      this.peer = m.src;
+      this._pc();
+      this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
+      try {
+        await this.pc.setRemoteDescription(p.sdp);
+        await this._flush();
+        await this.pc.setLocalDescription(await this.pc.createAnswer());
+        this.sig.send('ANSWER', this.peer, { sdp: this.pc.localDescription });
+        this._watchdog();
+      } catch (e) { this._err('Error al conectar: ' + (e.message || e)); }
+    } else if (m.type === 'CANDIDATE' && m.src === this.peer) {
+      this._candidate(p.c);
+    } else if (m.type === 'LEAVE' && m.src === this.peer && !this.open) {
+      this._resetGuest();
+    }
+  }
+
+  // el invitado se fue antes de conectar: se vuelve a esperar con el mismo código
+  _resetGuest() {
+    try { this.pc && this.pc.close(); } catch { /* nada */ }
+    this.pc = null; this.dc = null; this.peer = null; this.pending = [];
+  }
+
+  // Invitado: se conecta al anfitrión con su código
+  async join(code) {
+    code = String(code || '').trim().toUpperCase();
+    if (!/^[A-Z]{4}$/.test(code)) throw new Error('El código son 4 letras');
+    this.role = 'guest';
+    this.code = code;
+    this.sig = new Signal(this.server, `streetpumas-v1-g-${rand(8)}`);
+    await this.sig.open();
+    this.peer = hostId(code);
+    this.sig.onMessage = (m) => this._guestMsg(m);
+    this._pc();
+    this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
+    await this.pc.setLocalDescription(await this.pc.createOffer());
+    this.sig.send('OFFER', this.peer, { sdp: this.pc.localDescription });
+    this._watchdog();
+  }
+
+  async _guestMsg(m) {
+    const p = m.payload || {};
+    if (m.type === 'ANSWER' && m.src === this.peer) {
+      // solo se aplica una vez y en el estado correcto (evita "called in wrong state: stable")
+      if (!this.pc || this.pc.signalingState !== 'have-local-offer') return;
+      try { await this.pc.setRemoteDescription(p.sdp); await this._flush(); } catch (e) { this._err('Error al conectar: ' + (e.message || e)); }
+    } else if (m.type === 'CANDIDATE' && m.src === this.peer) {
+      this._candidate(p.c);
+    } else if (m.type === 'EXPIRE' && m.src === this.peer && !this.open) {
+      this._err(`No hay ninguna partida con el código ${this.code}. Revisa las letras o que tu amigo la tenga creada.`);
+    } else if (m.type === 'LEAVE' && m.src === this.peer && !this.open) {
+      this._err('El anfitrión ha cerrado la partida.');
+    }
+  }
+
+  _wireChannel(dc) {
+    super._wireChannel(dc);
+    const prev = dc.onopen;
+    dc.onopen = () => {
+      clearTimeout(this._wd);
+      // ya no hace falta el servidor de señalización
+      setTimeout(() => { if (this.sig) { this.sig.close(); this.sig = null; } }, 3000);
+      prev && prev();
+    };
+  }
+
+  _closed() {
+    clearTimeout(this._wd);
+    if (!this.open && this.pc) {
+      // falló antes de conectar: el anfitrión sigue esperando con su código; el invitado recibe el aviso
+      if (this.role === 'host') { this._resetGuest(); return; }
+      super._closed();
+      this._err('No se ha podido conectar entre los dos dispositivos. Probad otra vez, o uno de los dos con datos móviles.');
+      return;
+    }
+    super._closed();
+  }
+
+  close() {
+    clearTimeout(this._wd);
+    if (this.sig) { this.sig.close(); this.sig = null; }
+    super.close();
+  }
+}
+
+__exports.newCode = newCode;
+__exports.OnlineSession = OnlineSession;
+__exports.CLOUD_SIGNAL = CLOUD_SIGNAL;
+__exports.ONLINE_ICE = ONLINE_ICE;
 });
 __def("src/net/RoomSession.js", function(__exports, __req){
 // Partida en red a través del "room" de claude.ai (cuando el juego se abre como artefacto, donde el
@@ -10541,57 +10782,79 @@ __def("src/scenes/LanScene.js", function(__exports, __req){
 const { GAME } = __req("src/config/game.config.js");
 const { Menu, menuBackground, titleText, text, COLORS, panel } = __req("src/ui/draw.js");
 const { Net, NetSession, LanServer } = __req("src/net/Net.js");
+const { OnlineSession, CLOUD_SIGNAL } = __req("src/net/Online.js");
 const { RoomSession } = __req("src/net/RoomSession.js");
 
-// Modo LAN: crear o unirse a una partida entre dos dispositivos de la misma red.
-// Con el servidor LAN (node tools/lan.mjs) basta un código de 4 letras; sin él, se intercambian dos códigos
-// largos copiando y pegando (o compartiéndolos por WhatsApp). Los textos se piden en un panel HTML encima del juego.
+// Partida entre dos dispositivos (cada uno con su pantalla y sus controles), con un código de 4 letras:
+//   · dentro de claude.ai: sala ("room") del artefacto;
+//   · en cualquier otro sitio (GitHub Pages, zip…): por internet, con el servidor público de señalización de PeerJS;
+//   · con "npm run lan": el servidor de casa hace de señalización (no hace falta internet).
+// Sin internet ni servidor queda el modo de códigos largos (copiar y pegar).
 class LanScene {
   enter() {
     const g = this.game;
     this.t = 0;
-    this.status = 'Buscando servidor LAN…';
+    this.status = 'Preparando…';
     this.server = false;
     this.code = null;
     this.busy = false;
+    this.manual = false;
     if (Net.session) { Net.session.close(); Net.session = null; }
     this.room = null;
     this.webrtc = typeof RTCPeerConnection === 'function';
-    // dentro de claude.ai: sala compartida del artefacto (no hace falta estar en la misma wifi)
+    // servidor de señalización: ?signal=ws://… (pruebas) → servidor LAN de casa → el público de PeerJS
+    let forced = null;
+    try { const q = new URLSearchParams(location.search).get('signal'); if (q) forced = { url: q, key: 'peerjs' }; } catch { /* nada */ }
+    this.signal = forced || CLOUD_SIGNAL;
+    // dentro de claude.ai: sala compartida del artefacto
     const use = typeof window !== 'undefined' && window.claude && typeof window.claude.use === 'function' ? window.claude.use('room') : null;
     this.inClaude = !!use;
     if (use) {
       this.status = 'Conectando con claude.ai…';
       Promise.resolve(use).then((r) => {
         this.room = r;
-        if (r) { this.status = 'Online por claude.ai: basta un código de 4 letras (no hace falta la misma wifi).'; return; }
-        this._detectServer();
-      }).catch(() => this._detectServer());
-    } else this._detectServer();
+        if (r) { this.status = 'Online por claude.ai: basta un código de 4 letras.'; return; }
+        this._detectServer(forced);
+      }).catch(() => this._detectServer(forced));
+    } else this._detectServer(forced);
     g.audio.playMusic(null, 4);
-    this.menu = new Menu([
-      { label: 'CREAR PARTIDA', action: () => this._create() },
-      { label: 'UNIRSE A UNA PARTIDA', action: () => this._join() },
-      { label: 'VOLVER', action: () => this._leave() },
-    ], { y: 250, w: 380, h: 44, gap: 10, onBack: () => this._leave() });
+    this._buildMenu();
+  }
+
+  _buildMenu() {
+    const items = this.manual
+      ? [
+        { label: 'CREAR (CÓDIGOS LARGOS)', action: () => this._createManual() },
+        { label: 'UNIRSE (CÓDIGOS LARGOS)', action: () => this._joinManual() },
+        { label: 'VOLVER', action: () => { this.manual = false; this._buildMenu(); } },
+      ]
+      : [
+        { label: 'CREAR PARTIDA', action: () => this._create() },
+        { label: 'UNIRSE A UNA PARTIDA', action: () => this._join() },
+        ...(this.room ? [] : [{ label: 'SIN INTERNET: CÓDIGOS LARGOS', action: () => { this.manual = true; this._buildMenu(); } }]),
+        { label: 'VOLVER', action: () => this._leave() },
+      ];
+    this.menu = new Menu(items, { y: 236, w: 420, h: 42, gap: 8, onBack: () => (this.manual ? (this.manual = false, this._buildMenu()) : this._leave()) });
   }
 
   exit() { this._closePanel(); }
 
   _noOnlineMsg() {
     return this.inClaude
-      ? 'Para jugar online desde claude.ai los dos tenéis que entrar con vuestra cuenta: invita a tu amigo por email desde Compartir (con un enlace público no se puede).'
-      : 'Este navegador no permite conexiones directas aquí. Abre el juego del zip (dist/index.html) o usa "npm run lan".';
+      ? 'Para jugar online desde claude.ai los dos tenéis que entrar con vuestra cuenta: invita a tu amigo por email desde Compartir. O usad la versión de GitHub Pages.'
+      : 'Este navegador no permite conexiones directas. Prueba con Chrome.';
   }
 
-  _detectServer() {
-    if (!this.webrtc) {
-      this.status = '¡OJO! ' + this._noOnlineMsg();
-      return;
-    }
+  _detectServer(forced) {
+    if (!this.webrtc) { this.status = '¡OJO! ' + this._noOnlineMsg(); return; }
+    this.status = 'Online: uno crea la partida y el otro escribe el código de 4 letras.';
+    if (forced) return;
     LanServer.available().then((ok) => {
-      this.server = ok;
-      this.status = ok ? 'Servidor LAN encontrado: basta con un código de 4 letras.' : 'Sin servidor: os pasaréis dos códigos (copiar y pegar).';
+      if (!ok || this.room) return;
+      this.server = true;
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.signal = { url: `${proto}//${location.host}/peerjs`, key: 'peerjs' };
+      this.status = 'Servidor de casa encontrado: código de 4 letras sin necesidad de internet.';
     });
   }
 
@@ -10638,28 +10901,38 @@ class LanScene {
     if (this.room) return this._createRoom();
     if (!this.webrtc) return this._fail(this._noOnlineMsg());
     this.busy = true;
+    const net = new OnlineSession(this.signal);
+    net.onOpen = () => this._connected(net);
+    net.onError = (e) => this._fail(e);
+    Net.session = net;
+    this.status = 'Creando la partida…';
+    try {
+      this.code = await net.host();
+      this.status = 'Dile este código a tu amigo para que se una (vale desde cualquier sitio).';
+    } catch (e) { Net.session = null; net.close(); this._fail(e); }
+  }
+
+  async _createManual() {
+    if (this.busy) return;
+    if (!this.webrtc) return this._fail(this._noOnlineMsg());
+    this.busy = true;
     const net = new NetSession();
     net.onOpen = () => this._connected(net);
+    Net.session = net;
     this.status = 'Preparando la invitación…';
     try {
       const offer = await net.host();
-      if (this.server) {
-        this.code = await LanServer.create(offer);
-        this.status = 'Dile este código a tu amigo para que se una:';
-        const answer = await LanServer.waitAnswer(this.code, () => this.game.sceneName !== 'lan' || net.open);
-        if (answer) await net.acceptAnswer(answer);
-        this.status = 'Conectando…';
-      } else {
-        this._openPanel({
-          title: 'CREAR PARTIDA',
-          steps: [
-            { label: '1 · Envía esta invitación a tu amigo', value: offer, copy: true },
-            { label: '2 · Pega aquí la respuesta que te devuelva', input: true, button: 'CONECTAR', onSubmit: async (v) => {
-              try { await net.acceptAnswer(v); this.panel.setStatus('Conectando…'); } catch (e) { this._fail(e); }
-            } },
-          ],
-        });
-      }
+      let used = false;
+      this._openPanel({
+        title: 'CREAR PARTIDA',
+        steps: [
+          { label: '1 · Envía esta invitación a tu amigo', value: offer, copy: true },
+          { label: '2 · Pega aquí la respuesta que te devuelva', input: true, button: 'CONECTAR', onSubmit: async (v) => {
+            if (used) return;
+            try { used = true; await net.acceptAnswer(v); this.panel && this.panel.setStatus('Conectando…'); } catch (e) { used = false; this._fail(e); }
+          } },
+        ],
+      });
     } catch (e) { this._fail(e); }
   }
 
@@ -10696,35 +10969,41 @@ class LanScene {
     if (this.busy) return;
     if (this.room) return this._joinRoom();
     if (!this.webrtc) return this._fail(this._noOnlineMsg());
+    this._openPanel({
+      title: 'UNIRSE A UNA PARTIDA',
+      steps: [{ label: 'Escribe el código de 4 letras del anfitrión', input: 'short', button: 'UNIRSE', onSubmit: async (v) => {
+        if (Net.session) { Net.session.close(); Net.session = null; }
+        const net = new OnlineSession(this.signal);
+        net.onOpen = () => this._connected(net);
+        net.onError = (e) => { if (Net.session === net) { net.close(); Net.session = null; } this._fail(e); };
+        Net.session = net;
+        try {
+          this.panel && this.panel.setStatus('Buscando la partida…');
+          await net.join(v);
+          this.panel && this.panel.setStatus('Conectando con el anfitrión…');
+        } catch (e) { net.close(); Net.session = null; this._fail(e); }
+      } }],
+    });
+  }
+
+  async _joinManual() {
+    if (this.busy) return;
+    if (!this.webrtc) return this._fail(this._noOnlineMsg());
     this.busy = true;
     const net = new NetSession();
     net.onOpen = () => this._connected(net);
-    if (this.server) {
-      this._openPanel({
-        title: 'UNIRSE A UNA PARTIDA',
-        steps: [{ label: 'Escribe el código de 4 letras del anfitrión', input: 'short', button: 'UNIRSE', onSubmit: async (v) => {
+    Net.session = net;
+    this._openPanel({
+      title: 'UNIRSE A UNA PARTIDA',
+      steps: [
+        { label: '1 · Pega aquí la invitación del anfitrión', input: true, button: 'CREAR RESPUESTA', onSubmit: async (v) => {
           try {
-            const code = v.trim().toUpperCase();
-            this.panel.setStatus('Conectando…');
-            const offer = await LanServer.getOffer(code);
-            const answer = await net.join(offer);
-            await LanServer.answer(code, answer);
+            const answer = await net.join(v);
+            this.panel.showResult('2 · Envía esta respuesta al anfitrión y espera', answer);
           } catch (e) { this._fail(e); }
-        } }],
-      });
-    } else {
-      this._openPanel({
-        title: 'UNIRSE A UNA PARTIDA',
-        steps: [
-          { label: '1 · Pega aquí la invitación del anfitrión', input: true, button: 'CREAR RESPUESTA', onSubmit: async (v) => {
-            try {
-              const answer = await net.join(v);
-              this.panel.showResult('2 · Envía esta respuesta al anfitrión y espera', answer);
-            } catch (e) { this._fail(e); }
-          } },
-        ],
-      });
-    }
+        } },
+      ],
+    });
   }
 
   // ── panel HTML para copiar/pegar códigos ──
@@ -10743,15 +11022,14 @@ class LanScene {
   render(ctx) {
     const W = GAME.width;
     menuBackground(ctx, this.t, { c1: '#06231c', c2: '#030806', ray: 'rgba(80,255,170,0.06)' });
-    titleText(ctx, 'PARTIDA EN LAN', W / 2, 70, 56, { c1: '#d8ffe8', c2: '#3affa0' });
-    text(ctx, 'Dos dispositivos en la misma wifi · cada uno con su pantalla y sus controles', W / 2, 128, { size: 15, color: COLORS.dim });
+    titleText(ctx, this.manual ? 'SIN INTERNET' : 'ONLINE · 2 DISPOSITIVOS', W / 2, 70, this.manual ? 56 : 46, { c1: '#d8ffe8', c2: '#3affa0' });
+    text(ctx, this.manual ? 'Misma wifi sin internet: os pasáis una invitación y una respuesta (copiar y pegar)' : 'Cada uno con su pantalla y sus controles · desde cualquier sitio', W / 2, 128, { size: 15, color: COLORS.dim });
     if (this.code) {
       panel(ctx, W / 2 - 170, 160, 340, 74, {});
       titleText(ctx, this.code, W / 2, 198, 52, { c1: '#ffffff', c2: '#ffcf3a' });
     }
     this.menu.draw(ctx);
     text(ctx, this.status, W / 2, 452, { size: 15, color: this.status.startsWith('¡OJO') ? '#ff8a8a' : '#8af59b', lw: 3, maxW: W - 60, wrap: true });
-    if (!this.server && !this.room) text(ctx, 'Truco: con "npm run lan" en un ordenador, para entrar basta un código de 4 letras', W / 2, 500, { size: 12, color: COLORS.dim, maxW: W - 60 });
   }
 }
 
