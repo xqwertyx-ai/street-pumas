@@ -750,13 +750,27 @@ class PadScene {
   }
 
   render(ctx) {
-    const W = GAME.width;
+    const W = GAME.width, H = GAME.height, col = this.slot === 0 ? COLORS.p1 : COLORS.p2;
     menuBackground(ctx, this.t, { c1: this.slot === 0 ? '#2b0b3f' : '#05233f', c2: '#05020a' });
-    titleText(ctx, `MANDO J${this.slot + 1}`, W / 2, 135, 60, { c1: '#ffffff', c2: this.slot === 0 ? COLORS.p1 : COLORS.p2 });
+    // franja del color del jugador arriba y abajo, como la carcasa de un mando
+    ctx.save();
+    ctx.globalAlpha = 0.9; ctx.fillStyle = col; ctx.fillRect(0, 0, W, 6); ctx.fillRect(0, H - 6, W, 6);
+    ctx.globalAlpha = 0.07; ctx.fillRect(0, 0, W, H);
+    // rejilla de altavoz decorativa en el centro
+    ctx.globalAlpha = 0.18; ctx.fillStyle = '#fff';
+    for (let i = 0; i < 5; i++) for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.arc(W / 2 - 40 + i * 20, 330 + j * 18, 3, 0, 6.283); ctx.fill(); }
+    ctx.restore();
+    titleText(ctx, `J${this.slot + 1}`, 64, 52, 54, { c1: '#ffffff', c2: col });
+    text(ctx, 'STREET PUMAS · MANDO', 108, 44, { size: 15, align: 'left', color: COLORS.white, lw: 3 });
     const ok = this.net && this.net.open;
-    text(ctx, ok ? `Conectado a la pantalla (${this.net.transport === 'directa' ? 'conexión directa' : 'por servidor'})` : 'Sin conexión', W / 2, 188, { size: 16, color: ok ? '#8af59b' : '#ff8a8a', lw: 3 });
-    text(ctx, 'Mira la pantalla grande · el stick mueve, los botones atacan', W / 2, 212, { size: 14, color: COLORS.dim, lw: 3 });
-    text(ctx, 'En los menús: Puño o Patada = aceptar · Fuerte = volver', W / 2, 234, { size: 14, color: COLORS.dim, lw: 3 });
+    const blink = ok || Math.floor(this.t / 20) % 2 === 0;
+    ctx.save();
+    ctx.fillStyle = ok ? '#3cff7a' : '#ff5a5a'; ctx.globalAlpha = blink ? 1 : 0.3;
+    ctx.beginPath(); ctx.arc(116, 68, 5, 0, 6.283); ctx.fill();
+    ctx.restore();
+    text(ctx, ok ? (this.net.transport === 'directa' ? 'Conectado · directo' : 'Conectado · servidor') : 'Sin conexión', 128, 68, { size: 13, align: 'left', color: ok ? '#8af59b' : '#ff8a8a', lw: 3 });
+    text(ctx, 'Mira la pantalla grande', W / 2, 150, { size: 18, color: COLORS.gold, lw: 4 });
+    text(ctx, 'Menús: Puño o Patada = aceptar · Fuerte = volver', W / 2, 176, { size: 13, color: COLORS.dim, lw: 3 });
   }
 }
 
@@ -1274,7 +1288,17 @@ const PadHub = {
     for (let i = 0; i < 2; i++) this._host(i);
   },
 
+  // al salir del juego: se cierran las conexiones y no se vuelven a ofrecer códigos
+  shutdown() {
+    this.stopped = true;
+    for (const s of this.slots) if (s && s.net) { try { s.net.close(); } catch { /* nada */ } }
+  },
+
+  // cuántos móviles hay conectados ahora mismo como mando
+  connectedCount() { return this.slots.filter((s) => s && s.connected).length; },
+
   _host(i) {
+    if (this.stopped) return;
     const slot = this.slots[i] = { net: null, code: null, connected: false, status: 'creando código…' };
     const net = new OnlineSession(this.server);
     slot.net = net;
@@ -1293,7 +1317,9 @@ const PadHub = {
       this.input.remote[i] = r;
     });
     net.onClose = () => {
+      slot.connected = false;
       if (this.input) this.input.remote[i] = null;
+      if (this.stopped) return;
       if (this.input && this.input.pads) this.input.pads.toast = { text: `MANDO MÓVIL J${i + 1} DESCONECTADO`, t: 150 };
       setTimeout(() => this._host(i), 500); // código nuevo para volver a conectar
     };
@@ -1594,6 +1620,8 @@ function buildCharacter(data) {
     speechName: data.speechName || null, // cómo se pronuncia (síntesis de voz)
     voiceLang: data.voiceLang || null,    // idioma de su voz (p. ej. 'en-AU')
     voicePitch: data.voicePitch,
+    attackWords: data.attackWords || null,       // palabras que suelta al azar con cada ataque (Ruiz)
+    attackWordsLang: data.attackWordsLang || null,
     nickname: data.nickname || '',
     placeholder: !!data.placeholder,
     boss: !!data.boss,
@@ -2439,13 +2467,21 @@ __exports.character = character;
 __def("src/characters/roster/ruiz.js", function(__exports, __req){
 // RUIZ — cineasta risueña. Especial: súper patada voladora directa a la cara.
 // paraules cultes en català (les lletres del Diccionari de català)
-const PARAULES = ['ATZUCAC', 'ESCARRANSIT', 'XIUXIUEJAR', 'ENYORANÇA', 'AIXOPLUC', 'ESPATERRANT', 'REBEQUERIA', 'BARRINAR', 'MALENDREÇ', 'GARGAMELLÓ', 'FERESTEC', 'ESTRAFOLARI'];
+const PARAULES = ['ATZUCAC', 'ESCARRANSIT', 'XIUXIUEJAR', 'ENYORANÇA', 'AIXOPLUC', 'ESPATERRANT', 'REBEQUERIA', 'BARRINAR', 'MALENDREÇ', 'GARGAMELLÓ', 'FERESTEC', 'ESTRAFOLARI',
+  // +20 (v0.21)
+  'RAUXA', 'ESBOJARRAT', 'EIXERIT', 'ESPARVERAT', 'BADOC', 'CAPTENIMENT', 'ESMUNYEDÍS', 'GARBUIX', 'TRAPELLA', 'BELLUGUET',
+  'FERUM', 'NYICRIS', 'XAFARDER', 'GALIFARDEU', 'ESTABORNIR', 'ATABALAR', 'CAPGIRELL', 'INEFABLE', 'ESCAIENT', 'FRISANÇA'];
+// com es diuen en veu alta: «¡Atzucac!» (les 5 primeres tenen veu gravada; la resta, síntesi de veu en català)
+const DIGUES = PARAULES.map((w) => `¡${w[0]}${w.slice(1).toLowerCase()}!`);
 
 const character = {
   id: 'ruiz',
   name: 'Ruiz',
   nickname: 'La Directora',
   personality: 'Cineasta y risueña.',
+  // cada ataque (normales y el Diccionari) suelta una palabra culta al azar
+  attackWords: DIGUES,
+  attackWordsLang: 'ca-ES',
   description: 'Acción de película: claqueta, regla dolorosa, el Diccionari de català y la patada a la cara más famosa del grupo.',
   look: {
     skin: '#f4d0bc', hair: '#141014', hairStyle: 'bun', facialHair: 'none',
@@ -2470,7 +2506,7 @@ const character = {
     },
     {
       // DICCIONARI DE CATALÀ: abre el diccionario con los brazos estirados y le salen palabras cultas que atacan
-      id: 'diccionari', name: 'Diccionari de català', say: ['¡Atzucac!', '¡Escarransit!', '¡Xiuxiuejar!', '¡Enyorança!', '¡Aixopluc!'], input: { dir: 'forward', motion: '236', button: 'K' },
+      id: 'diccionari', name: 'Diccionari de català', say: DIGUES, sayLang: 'ca-ES', input: { dir: 'forward', motion: '236', button: 'K' },
       anim: 'cast', startup: 12, active: 38, recovery: 18, prop: 'dictionary', propPhase: 'always',
       damage: 17, hitstun: 16, blockstun: 9, knockback: 1.5, hitstop: 'light', hitSfx: 'hit_energy',
       behavior: { type: 'radial', sprite: 'text', labels: PARAULES, count: 1, waves: 5, interval: 9, arc: [-14, -14], twist: 9, speed: 8,
@@ -5792,6 +5828,7 @@ __def("src/input/InputManager.js", function(__exports, __req){
 const { KEYBOARD } = __req("src/config/controls.config.js");
 const { BTN } = __req("src/input/InputBuffer.js");
 const { Gamepads } = __req("src/input/Gamepads.js");
+const { toggleFullscreen, hitFullscreenButton } = __req("src/utils/fullscreen.js");
 
 const ACTIONS = ['up', 'down', 'left', 'right', 'L', 'H', 'K', 'S', 'X', 'B', 'pause'];
 
@@ -5821,6 +5858,7 @@ class InputManager {
   _bind() {
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Tab' || e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+      if (e.code === 'KeyF' && !e.repeat) toggleFullscreen(); // F = pantalla completa (en cualquier momento)
       if (!this.keys.has(e.code)) this._lastKeyDown = e.code;
       this.keys.add(e.code);
       this.lastDevice = 'keyboard';
@@ -5832,6 +5870,8 @@ class InputManager {
     c.addEventListener('pointerdown', (e) => {
       const p = this.renderer.toLogical(e.clientX, e.clientY);
       if (e.pointerType !== 'mouse') this.lastDevice = 'touch';
+      // botón rápido de pantalla completa (esquina, fuera del combate)
+      if (this.fsButtonOn && hitFullscreenButton(p)) { toggleFullscreen(); return; }
       // si los controles táctiles capturan el toque, no es un "tap" de menú
       if (this.touch && this.touch.onPointerDown(e, p)) return;
       this._pendingTaps.push({ x: p.x, y: p.y, type: e.pointerType });
@@ -5911,6 +5951,9 @@ class InputManager {
   update() {
     this.pads.poll();
     if (this.pads.used) { this.lastDevice = 'gamepad'; if (this.touch) this.touch.padInUse = true; }
+    // mandos conectados (de verdad o móviles-mando): con dos, fuera los controles en pantalla y la pelea queda limpia
+    this.padsConnected = this.pads.count + this.remote.filter(Boolean).length;
+    if (this.touch) this.touch.padsCover = this.padsConnected >= 2;
     this.taps = this._pendingTaps;
     this._pendingTaps = [];
     for (let p = 0; p < 2; p++) {
@@ -5971,16 +6014,21 @@ class TouchControls {
   get visible() {
     const s = Storage.settings.touchControls;
     // en automático se ocultan si se está jugando con un mando (p. ej. un mando bluetooth en el móvil)
-    return this.forceVisible || s === 'on' || (s === 'auto' && this.isTouchDevice && !this.padInUse);
+    if (this.forceVisible) return true;          // el móvil hecho mando
+    if (this.padsCover) return false;            // dos mandos conectados: pelea limpia
+    return s === 'on' || (s === 'auto' && this.isTouchDevice && !this.padInUse);
   }
   // en pausa los controles táctiles se apagan para que los toques lleguen al menú (antes se los tragaban)
   get active() { return this.inFight && this.visible && !this.suspended; }
 
   reset() { this.stickId = null; this.buttonTouches.clear(); this.pauseTapped = false; }
 
+  // botones: en el móvil-mando hay toda la pantalla, así que van más grandes y separados
+  _btns() { return this.forceVisible ? PAD_BUTTONS : TOUCH.buttons; }
+
   _buttonAt(p) {
     let best = null, bd = Infinity;
-    for (const b of TOUCH.buttons) {
+    for (const b of this._btns()) {
       const d = Math.hypot(p.x - b.x, p.y - b.y);
       if (d < b.r * 1.3 && d < bd) { bd = d; best = b.id; }
     }
@@ -5999,14 +6047,20 @@ class TouchControls {
       this.stickPos = { x: p.x, y: p.y };
       return true;
     }
-    this.buttonTouches.set(e.pointerId, this._buttonAt(p));
+    const b = this._buttonAt(p);
+    this.buttonTouches.set(e.pointerId, b);
+    if (b) this._buzz();
     return true;
   }
 
   onPointerMove(e, p) {
     if (!this.active) return;
     if (e.pointerId === this.stickId) this.stickPos = { x: p.x, y: p.y };
-    else if (this.buttonTouches.has(e.pointerId)) this.buttonTouches.set(e.pointerId, this._buttonAt(p));
+    else if (this.buttonTouches.has(e.pointerId)) {
+      const b = this._buttonAt(p);
+      if (b && b !== this.buttonTouches.get(e.pointerId)) this._buzz();
+      this.buttonTouches.set(e.pointerId, b);
+    }
   }
 
   onPointerUp(e) {
@@ -6032,43 +6086,130 @@ class TouchControls {
     return s;
   }
 
+  // vibración cortita al pulsar (móviles Android; en iOS no hace nada)
+  _buzz() { try { if (this.forceVisible && navigator.vibrate) navigator.vibrate(12); } catch { /* nada */ } }
+
   render(ctx) {
     if (!this.active) return;
+    const pad = !!this.forceVisible;       // móvil-mando: todo opaco y más grande
+    const alpha = pad ? 1 : TOUCH.opacity + 0.15;
+    const t = (this._t = (this._t || 0) + 1);
     ctx.save();
-    ctx.globalAlpha = TOUCH.opacity;
-    // stick
+    ctx.globalAlpha = alpha;
+    // ── stick ──
     const o = this.stickId !== null ? this.stickOrigin : { x: TOUCH.stick.x, y: TOUCH.stick.y };
-    const r = TOUCH.stick.radius;
-    ctx.fillStyle = 'rgba(20,10,30,0.55)'; ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, 6.283); ctx.fill(); ctx.stroke();
-    let kx = o.x, ky = o.y;
+    const r = TOUCH.stick.radius * (pad ? 1.12 : 1);
+    let kx = o.x, ky = o.y, dir = null;
     if (this.stickId !== null) {
       const dx = this.stickPos.x - o.x, dy = this.stickPos.y - o.y, len = Math.hypot(dx, dy) || 1, m = Math.min(len, r);
       kx = o.x + (dx / len) * m; ky = o.y + (dy / len) * m;
+      const st = this.read();
+      if (st.x || st.y) dir = Math.atan2(st.y, st.x);
     }
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.beginPath(); ctx.arc(kx, ky, r * 0.42, 0, 6.283); ctx.fill();
-    // botones
+    // base: sombra, plato con degradado y anillo
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(o.x, o.y + r * 0.16, r * 1.04, r * 0.98, 0, 0, 6.283); ctx.fill();
+    let gr = ctx.createRadialGradient(o.x, o.y - r * 0.4, r * 0.1, o.x, o.y, r);
+    gr.addColorStop(0, 'rgba(70,40,110,0.95)'); gr.addColorStop(1, 'rgba(14,6,26,0.95)');
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, 6.283); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.stroke();
+    // 8 marcas de dirección (la activa se ilumina)
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4, on = dir !== null && Math.abs(Math.atan2(Math.sin(a - dir), Math.cos(a - dir))) < 0.2;
+      const x1 = o.x + Math.cos(a) * r * 0.78, y1 = o.y + Math.sin(a) * r * 0.78;
+      ctx.fillStyle = on ? '#ffcf3a' : 'rgba(255,255,255,0.3)';
+      ctx.beginPath(); ctx.arc(x1, y1, on ? 5 : 3, 0, 6.283); ctx.fill();
+    }
+    if (dir !== null) { // arco luminoso hacia donde se empuja
+      ctx.strokeStyle = 'rgba(255,207,58,0.85)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.arc(o.x, o.y, r - 4, dir - 0.5, dir + 0.5); ctx.stroke();
+    }
+    // bola del stick con brillo
+    const kr = r * 0.44;
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath(); ctx.arc(kx, ky + 5, kr, 0, 6.283); ctx.fill();
+    gr = ctx.createRadialGradient(kx - kr * 0.35, ky - kr * 0.45, kr * 0.1, kx, ky, kr);
+    gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.55, '#d9d2ea'); gr.addColorStop(1, '#8c7fae');
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(kx, ky, kr, 0, 6.283); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(30,14,48,0.8)'; ctx.stroke();
+
+    // ── botones de arcade ──
     const pressed = new Set(this.buttonTouches.values());
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (const b of TOUCH.buttons) {
+    for (const b of this._btns()) {
       const on = pressed.has(b.id);
-      const dim = b.needsEnergy && !this.energyReady;
-      ctx.globalAlpha = TOUCH.opacity * (dim ? 0.45 : 1) + (on ? 0.3 : 0);
-      ctx.fillStyle = on ? b.color : 'rgba(20,10,30,0.6)';
-      ctx.strokeStyle = b.color; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(b.x, b.y, b.r * (on ? 0.92 : 1), 0, 6.283); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = on ? '#1a0b22' : b.color;
-      drawPixelText(ctx, b.label, b.x, b.y, { k: 3, fill: ctx.fillStyle, o: 0 });
+      const dim = !pad && b.needsEnergy && !this.energyReady;
+      const ready = b.needsEnergy && this.energyReady && !pad;
+      const br = b.r;
+      const lift = on ? 1 : 5; // al pulsar el botón "se hunde"
+      ctx.globalAlpha = alpha * (dim ? 0.45 : 1);
+      if (ready) { // súper lista: halo que late
+        const k = 0.5 + 0.5 * Math.sin(t * 0.2);
+        ctx.fillStyle = `rgba(255,58,122,${0.25 + k * 0.3})`;
+        ctx.beginPath(); ctx.arc(b.x, b.y, br + 8 + k * 5, 0, 6.283); ctx.fill();
+      }
+      if (on) { // destello al pulsar
+        ctx.fillStyle = shade(b.color, 0, 0.35);
+        ctx.beginPath(); ctx.arc(b.x, b.y, br + 10, 0, 6.283); ctx.fill();
+      }
+      // carcasa (anillo oscuro) y lateral del botón
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath(); ctx.arc(b.x, b.y + 6, br + 4, 0, 6.283); ctx.fill();
+      ctx.fillStyle = '#140a22';
+      ctx.beginPath(); ctx.arc(b.x, b.y, br + 4, 0, 6.283); ctx.fill();
+      ctx.fillStyle = shade(b.color, -0.45);
+      ctx.beginPath(); ctx.arc(b.x, b.y + 2, br, 0, 6.283); ctx.fill();
+      // cara del botón con degradado
+      const cy = b.y + 2 - lift;
+      const g2 = ctx.createRadialGradient(b.x - br * 0.3, cy - br * 0.4, br * 0.1, b.x, cy, br);
+      g2.addColorStop(0, shade(b.color, on ? 0.15 : 0.45)); g2.addColorStop(1, shade(b.color, on ? -0.25 : -0.05));
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(b.x, cy, br * 0.94, 0, 6.283); ctx.fill();
+      // brillo
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath(); ctx.ellipse(b.x - br * 0.18, cy - br * 0.45, br * 0.5, br * 0.22, -0.3, 0, 6.283); ctx.fill();
+      // letra
+      drawPixelText(ctx, b.label, b.x, cy + 1, { k: pad ? 4 : 3, fill: '#ffffff', outline: shade(b.color, -0.6), o: 1 });
+      // nombre debajo (PUÑO, FUERTE…)
+      if (pad || this.showNames) drawPixelText(ctx, (BUTTON_NAMES[b.id] || '').toUpperCase(), b.x, b.y + br + 16, { k: 1, fill: shade(b.color, 0.35), o: 1 });
     }
-    // pausa
+    // ── pausa (pastilla) ──
     const pz = TOUCH.pause;
-    ctx.globalAlpha = TOUCH.opacity;
-    ctx.fillStyle = 'rgba(20,10,30,0.6)'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(pz.x, pz.y, pz.r, 0, 6.283); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#fff'; ctx.fillRect(pz.x - 7, pz.y - 9, 5, 18); ctx.fillRect(pz.x + 2, pz.y - 9, 5, 18);
+    ctx.globalAlpha = alpha;
+    const pw = pad ? 104 : 46, ph = 30;
+    ctx.fillStyle = 'rgba(14,6,26,0.8)'; ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
+    roundRect(ctx, pz.x - pw / 2, pz.y - ph / 2, pw, ph, ph / 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    const px0 = pad ? pz.x - 34 : pz.x - 6;
+    ctx.fillRect(px0, pz.y - 7, 4, 14); ctx.fillRect(px0 + 7, pz.y - 7, 4, 14);
+    if (pad) drawPixelText(ctx, 'PAUSA', pz.x + 12, pz.y + 1, { k: 1, fill: '#fff', o: 0 });
     ctx.restore();
   }
+}
+
+// distribución del móvil-mando: dos filas de tres, como un panel de recreativa
+const PAD_BUTTONS = [
+  { id: 'H', label: 'F', x: 618, y: 292, r: 48, color: '#ff6a3a' },
+  { id: 'S', label: '★', x: 742, y: 292, r: 48, color: '#c66bff' },
+  { id: 'X', label: 'S', x: 866, y: 292, r: 48, color: '#ff3a7a' },
+  { id: 'L', label: 'P', x: 618, y: 426, r: 48, color: '#ffcf3a' },
+  { id: 'K', label: 'K', x: 742, y: 426, r: 48, color: '#3ad1ff' },
+  { id: 'B', label: '⛨', x: 866, y: 426, r: 48, color: '#8af59b' },
+];
+
+const BUTTON_NAMES = { L: 'Puño', H: 'Fuerte', K: 'Patada', S: 'Especial', X: 'Súper', B: 'Bloqueo' };
+
+// aclara (amt > 0) u oscurece (amt < 0) un color #rrggbb; alpha opcional
+function shade(hex, amt, alpha = 1) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (c) => Math.round(amt >= 0 ? c + (255 - c) * amt : c * (1 + amt));
+  return `rgba(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)},${alpha})`;
+}
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 }
 
 __exports.TouchControls = TouchControls;
@@ -6671,11 +6812,33 @@ class AudioManager {
     const unlock = () => this.unlock();
     // móvil: iOS/Android solo dejan arrancar el audio dentro de un gesto real (touchend/click cuentan; pointerdown no siempre)
     for (const ev of ['pointerdown', 'touchstart', 'touchend', 'click', 'keydown']) window.addEventListener(ev, unlock, { capture: true });
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) this._resume(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this._sleep(); else this._resume(); });
+    // al cerrar o cambiar de página (o al salir con la tecla Inicio de la tele) que no se quede sonando nada
+    window.addEventListener('pagehide', () => this._sleep());
+  }
+
+  // pestaña oculta: se para todo el audio (música, voces, efectos) hasta que se vuelva
+  _sleep() {
+    try { if (this.ac && this.ac.state === 'running') this.ac.suspend().catch(() => {}); } catch { /* nada */ }
+    try { if (this.musicEl && !this.musicEl.paused) { this.musicEl.pause(); this._musicWasPlaying = true; } } catch { /* nada */ }
+    try { if (this.silentEl) this.silentEl.pause(); } catch { /* nada */ }
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch { /* nada */ }
+  }
+
+  // SALIR DEL JUEGO: apaga el audio del todo (no vuelve a sonar aunque se toque la página)
+  shutdown() {
+    this.dead = true;
+    this.stopMusic();
+    this._sleep();
+    try { if (this.silentEl) { this.silentEl.removeAttribute('src'); this.silentEl.load(); } } catch { /* nada */ }
+    try { if (this.ac) this.ac.close().catch(() => {}); } catch { /* nada */ }
+    this.ac = null; this.music = null;
   }
 
   _resume() {
+    if (this.dead) return;
     if (this.ac && this.ac.state !== 'running') this.ac.resume().catch(() => {});
+    if (this._musicWasPlaying && this.musicEl) { this._musicWasPlaying = false; this.musicEl.play().catch(() => {}); }
     if (this.silentEl && this.silentEl.paused) this.silentEl.play().catch(() => {});
   }
 
@@ -6705,6 +6868,7 @@ class AudioManager {
   }
 
   unlock() {
+    if (this.dead) return;
     if (this.unlocked) { this._resume(); if (!this.speechPrimed) this._primeMobile(); return; }
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
@@ -6837,10 +7001,10 @@ class AudioManager {
     for (const [k, url] of Object.entries(VOICE_CLIPS)) if (ids.has(k.slice(0, k.indexOf('|')))) this._load(url);
   }
 
-  voice(def, key, text, { queue = false, priority = false } = {}) {
+  voice(def, key, text, { queue = false, priority = false, lang = null } = {}) {
     if (!Storage.settings.voices) return;
     const opts = { queue, priority };
-    const tts = () => { if (text) this.say(text, { pitch: def.voicePitch ?? (def.look.female ? 1.5 : 0.9), rate: def.voiceRate || 1.25, lang: def.voiceLang, queue, priority }); };
+    const tts = () => { if (text) this.say(text, { pitch: def.voicePitch ?? (def.look.female ? 1.5 : 0.9), rate: def.voiceRate || 1.25, lang: lang || def.voiceLang, queue, priority }); };
     if (this._voiceFile(def.sounds && def.sounds[key], opts)) return;
     if (text && (this._voiceFile(this._clip(def.id, text), opts, tts) || this._voiceFile(this._clip('announcer', text), opts, tts))) return;
     tts();
@@ -6876,7 +7040,9 @@ class AudioManager {
       u.lang = lang || 'es-ES'; u.pitch = pitch; u.rate = rate;
       const vs = (this.voices && this.voices.length ? this.voices : ss.getVoices()) || [];
       const want = u.lang.toLowerCase(), base = want.slice(0, 2);
-      const v = vs.find((x) => x.lang && x.lang.toLowerCase().replace('_', '-') === want) || vs.find((x) => x.lang && x.lang.toLowerCase().startsWith(base));
+      let v = vs.find((x) => x.lang && x.lang.toLowerCase().replace('_', '-') === want) || vs.find((x) => x.lang && x.lang.toLowerCase().startsWith(base));
+      // sin voz en ese idioma (p. ej. catalán en una tele): mejor en castellano que con la voz inglesa por defecto
+      if (!v && base !== 'es') { v = vs.find((x) => x.lang && x.lang.toLowerCase().startsWith('es')); if (v) u.lang = v.lang; }
       if (v) u.voice = v;
       u.volume = Math.min(1, Storage.settings.masterVolume * 1.1);
       ss.speak(u);
@@ -7373,6 +7539,8 @@ class Fighter {
     if (move.sfx) world.emit({ type: 'sfx', id: move.sfx, x: this.x });
     if (move.voice || (move.kind === 'special' || move.kind === 'super')) {
       world.emit({ type: 'voice', fighter: this, key: move.kind === 'super' ? 'super' : 'special', move });
+    } else if (this.def.attackWords) {
+      world.emit({ type: 'voice', fighter: this, key: 'word', move, word: true });
     }
     if (move.kind === 'super' && move.cinematic) world.startSuper(this, move);
     this.input.consumeAll();
@@ -8088,6 +8256,8 @@ const { ROSTER } = __req("src/characters/index.js");
 const { Fighter, ST } = __req("src/combat/Fighter.js");
 const { FighterView } = __req("src/animation/FighterView.js");
 const { rng } = __req("src/utils/math.js");
+const { isFullscreen, toggleFullscreen } = __req("src/utils/fullscreen.js");
+const { quitGame } = __req("src/utils/quit.js");
 
 // Pantalla de título + menú principal
 class TitleScene {
@@ -8106,7 +8276,9 @@ class TitleScene {
       { label: 'ONLINE · 2 DISPOSITIVOS', action: () => g.goto('lan') },
       { label: 'CÓMO SE JUEGA', action: () => g.goto('howto') },
       { label: 'AJUSTES', action: () => g.goto('settings') },
-    ], { y: 214, w: 320, h: 30, gap: 5 });
+      { label: 'PANTALLA COMPLETA', value: () => (isFullscreen() ? 'Sí' : 'No'), action: () => toggleFullscreen(), left: () => toggleFullscreen(), right: () => toggleFullscreen() },
+      { label: 'SALIR DEL JUEGO', action: () => quitGame(g) },
+    ], { y: 200, w: 340, h: 27, gap: 4 });
     // dos Pumas al azar posando en la portada
     const pick = [...ROSTER].sort(() => rng() - 0.5).slice(0, 2);
     this.showcase = pick.map((def, i) => {
@@ -8146,7 +8318,7 @@ class TitleScene {
       if (Math.floor(this.t / 30) % 2 === 0) text(ctx, 'PULSA CUALQUIER BOTÓN · TOCA LA PANTALLA', W / 2, 360, { size: 20, color: COLORS.gold, lw: 5 });
       text(ctx, '16 Pumas · 4 jefes · lugares míticos', W / 2, 400, { size: 15, color: COLORS.dim, lw: 4 });
     } else this.menu.draw(ctx);
-    text(ctx, 'v0.13', W - 12, GAME.height - 14, { size: 11, align: 'right', color: 'rgba(255,255,255,0.35)' });
+    text(ctx, 'v0.21', W - 12, GAME.height - 14, { size: 11, align: 'right', color: 'rgba(255,255,255,0.35)' });
   }
 }
 
@@ -11043,6 +11215,8 @@ const { Storage } = __req("src/utils/storage.js");
 const { BTN } = __req("src/input/InputBuffer.js");
 const { Net } = __req("src/net/Net.js");
 const { SnapshotWriter, applySnapshot, packEvents, unpackEvents, writeCompact, applyCompact } = __req("src/net/snapshot.js");
+const { isFullscreen, toggleFullscreen } = __req("src/utils/fullscreen.js");
+const { quitGame } = __req("src/utils/quit.js");
 
 // Muñeco de entrenamiento con varios comportamientos
 class DummyController {
@@ -11154,7 +11328,8 @@ class FightScene {
       // en LAN la pausa no para el combate (el otro sigue jugando)
       items.length = 2;
       items.push({ label: 'ABANDONAR PARTIDA', action: () => { if (Net.session) Net.session.close(); Net.session = null; g.goto('title'); } });
-      this.pauseMenu = new Menu(items, { y: 150, w: 340, h: 42, gap: 8, onBack: () => { if (this.showMoves) this.showMoves = false; else this.paused = false; } });
+      items.push(this._fsItem(), { label: 'SALIR DEL JUEGO', action: () => quitGame(g) });
+      this.pauseMenu = new Menu(items, { y: 150, w: 360, h: 38, gap: 6, onBack: () => { if (this.showMoves) this.showMoves = false; else this.paused = false; } });
       return;
     }
     if (this.mode === 'training') {
@@ -11166,7 +11341,13 @@ class FightScene {
     if (this.mode === 'tournament') items.push({ label: 'VER EL CUADRO', action: () => g.goto('tournament') });
     else items.push({ label: 'ELEGIR PERSONAJE', action: () => g.goto('select', { mode: this.mode }) });
     items.push({ label: 'MENÚ PRINCIPAL', action: () => g.goto('title') });
-    this.pauseMenu = new Menu(items, { y: 150, w: 340, h: 42, gap: 8, onBack: () => { if (this.showMoves) this.showMoves = false; else this.paused = false; } });
+    items.push(this._fsItem(), { label: 'SALIR DEL JUEGO', action: () => quitGame(g) });
+    const n = items.length, h = n > 7 ? 34 : 38, gap = n > 7 ? 5 : 6;
+    this.pauseMenu = new Menu(items, { y: n > 7 ? 132 : 150, w: 360, h, gap, onBack: () => { if (this.showMoves) this.showMoves = false; else this.paused = false; } });
+  }
+
+  _fsItem() {
+    return { label: 'PANTALLA COMPLETA', value: () => (isFullscreen() ? 'Sí' : 'No'), action: () => toggleFullscreen(), left: () => toggleFullscreen(), right: () => toggleFullscreen() };
   }
 
   update() {
@@ -11284,7 +11465,20 @@ class FightScene {
       case 'trail': spawnTrail(ps, e); break;
       case 'text': ps.spawn('text', e.x, e.y, { text: e.text, size: e.small ? 26 : 34, color: e.color || COLORS.gold, vy: -0.8, life: 60 }); break;
       case 'sfx': au.play(e.id, { pan: e.x !== undefined ? this._pan(e.x) : 0 }); break;
-      case 'voice': { const say = Array.isArray(e.move.say) ? e.move.say[Math.floor(Math.random() * e.move.say.length)] : e.move.say; au.voice(e.fighter.def, e.key, e.key === 'super' ? catchphrase(e.fighter.def) || say || e.move.name : say || e.move.name); break; }
+      case 'voice': {
+        const def = e.fighter.def, list = e.word ? def.attackWords : e.move.say;
+        let say = list;
+        if (Array.isArray(list)) {
+          // al azar, sin repetir la última palabra
+          let i = Math.floor(Math.random() * list.length);
+          if (list.length > 1 && list[i] === e.fighter._lastSay) i = (i + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
+          say = e.fighter._lastSay = list[i];
+        }
+        const lang = e.word ? def.attackWordsLang : (e.move.sayLang || null);
+        if (e.word) { au.voice(def, 'word', say, { lang }); break; }
+        au.voice(def, e.key, e.key === 'super' ? catchphrase(def) || say || e.move.name : say || e.move.name, { lang });
+        break;
+      }
       case 'super': au.play('super_start'); this.flash = 6; this.camera.shake(6, 20); break;
       case 'announce': au.announce(e.key); break;
       case 'round': au.setIntensity(e.final ? 1 : 0); this.particles.clear(); break;
@@ -11363,7 +11557,7 @@ class FightScene {
     const W = GAME.width, H = GAME.height;
     ctx.fillStyle = 'rgba(6,2,14,0.72)'; ctx.fillRect(0, 0, W, H);
     if (this.showMoves) return this._renderMoves(ctx);
-    titleText(ctx, 'PAUSA', W / 2, 90, 64);
+    titleText(ctx, 'PAUSA', W / 2, this.pauseMenu.y < 150 ? 76 : 90, 64);
     this.pauseMenu.draw(ctx);
     text(ctx, `Dificultad CPU: ${DIFFICULTY[this.difficulty].label}`, W / 2, H - 24, { size: 13, color: COLORS.dim });
   }
@@ -11534,8 +11728,38 @@ function toggleFullscreen() {
   } catch { /* el navegador no lo permite (p. ej. dentro de un iframe) */ }
 }
 
+function exitFullscreen() {
+  try { if (isFullscreen()) (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch { /* nada */ }
+}
+
+// Botón rápido de pantalla completa (esquina superior derecha, fuera del combate)
+const FS_BUTTON = { x: 928, y: 30, r: 19 };
+function drawFullscreenButton(ctx, hover = false) {
+  const { x, y, r } = FS_BUTTON, on = isFullscreen();
+  ctx.save();
+  ctx.globalAlpha = hover ? 1 : 0.8;
+  ctx.fillStyle = 'rgba(14,6,26,0.78)'; ctx.strokeStyle = hover ? '#ffcf3a' : 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); ctx.stroke();
+  // cuatro esquinas: hacia fuera = entrar · hacia dentro = salir
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.lineCap = 'square';
+  const a = 8, l = 5;
+  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const cx = x + sx * a, cy = y + sy * a;
+    ctx.beginPath();
+    if (!on) { ctx.moveTo(cx, cy - sy * l); ctx.lineTo(cx, cy); ctx.lineTo(cx - sx * l, cy); }
+    else { const ix = x + sx * (a - l), iy = y + sy * (a - l); ctx.moveTo(ix + sx * l, iy); ctx.lineTo(ix, iy); ctx.lineTo(ix, iy + sy * l); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function hitFullscreenButton(p) { return Math.hypot(p.x - FS_BUTTON.x, p.y - FS_BUTTON.y) < FS_BUTTON.r * 1.6; }
+
 __exports.isFullscreen = isFullscreen;
 __exports.toggleFullscreen = toggleFullscreen;
+__exports.exitFullscreen = exitFullscreen;
+__exports.drawFullscreenButton = drawFullscreenButton;
+__exports.hitFullscreenButton = hitFullscreenButton;
+__exports.FS_BUTTON = FS_BUTTON;
 });
 __def("src/ui/askText.js", function(__exports, __req){
 // Pequeño cuadro HTML para escribir un texto (p. ej. el código secreto). Devuelve una promesa con el texto o null.
@@ -12195,6 +12419,41 @@ class CodePanel {
 
 __exports.LanScene = LanScene;
 });
+__def("src/utils/quit.js", function(__exports, __req){
+// SALIR DEL JUEGO: para la música y las voces, cierra conexiones (online y móviles-mando), sale de pantalla
+// completa e intenta cerrar la pestaña. Si el navegador no deja cerrarla (lo normal), deja una pantalla
+// tranquila sin nada sonando, con un botón para volver a jugar.
+const { exitFullscreen } = __req("src/utils/fullscreen.js");
+const { Net } = __req("src/net/Net.js");
+const { PadHub } = __req("src/net/PadHub.js");
+
+function quitGame(game) {
+  try { game.audio.shutdown(); } catch { /* nada */ }
+  try { if (Net.session) Net.session.close(); Net.session = null; } catch { /* nada */ }
+  try { PadHub.shutdown(); } catch { /* nada */ }
+  game.running = false;
+  exitFullscreen();
+  try { window.close(); } catch { /* nada */ }
+  setTimeout(() => {
+    document.body.innerHTML = `<style>
+      html,body{margin:0;height:100%;background:#0b0614;color:#f2ecff;font:18px/1.4 ui-monospace,Menlo,Consolas,monospace;overflow:hidden}
+      .bye{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:16px;
+        background:radial-gradient(ellipse at 50% 35%,#3a1258 0%,#0b0614 70%)}
+      .bye h1{margin:0;font-size:clamp(34px,7vw,64px);letter-spacing:4px;color:#fff27a;text-shadow:0 4px 0 #ff5a00,0 8px 0 #05020a}
+      .bye p{margin:0;color:#cfc6e6}
+      .bye button{margin-top:10px;min-width:240px;min-height:54px;background:#6a2ab0;color:#fff;border:3px solid #ffcf3a;font:inherit;font-weight:700;letter-spacing:2px;cursor:pointer}
+      .bye button:focus{outline:4px solid #fff;outline-offset:3px}
+    </style><div class="bye"><h1>STREET PUMAS</h1><p>Juego cerrado: música y conexiones paradas.</p><p>Ya puedes cerrar esta pestaña o salir con el botón Inicio.</p>
+    <button id="again">▶ VOLVER A JUGAR</button></div>`;
+    const b = document.getElementById('again');
+    b.onclick = () => location.reload();
+    b.focus();
+    window.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.code === 'Space') location.reload(); });
+  }, 120);
+}
+
+__exports.quitGame = quitGame;
+});
 __def("src/main.js", function(__exports, __req){
 const { PadScene } = __req("src/scenes/PadScene.js");
 const { TournamentSetupScene, TournamentScene } = __req("src/scenes/TournamentScenes.js");
@@ -12217,6 +12476,7 @@ const { SettingsScene, HowToScene } = __req("src/scenes/SettingsScene.js");
 const { LanScene } = __req("src/scenes/LanScene.js");
 const { GAME } = __req("src/config/game.config.js");
 const { text } = __req("src/ui/draw.js");
+const { drawFullscreenButton, hitFullscreenButton } = __req("src/utils/fullscreen.js");
 
 async function loadFonts() {
   if (!document.fonts || !document.fonts.load) return;
@@ -12256,6 +12516,12 @@ async function boot() {
   game.register('tournament', new TournamentScene());
 
   renderer.overlays.push((ctx) => input.touch.render(ctx));
+  // botón rápido de pantalla completa: en todas las pantallas menos en el combate (pelea limpia)
+  const fsSupported = !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+  renderer.overlays.push((ctx, g) => {
+    input.fsButtonOn = fsSupported && g.sceneName !== 'fight';
+    if (input.fsButtonOn) drawFullscreenButton(ctx, input.pointer.x >= 0 && hitFullscreenButton(input.pointer));
+  });
   renderer.overlays.push((ctx, g) => {
     if (Storage.settings.showFps) text(ctx, `${g.fps} FPS · upd ${g.msUpdate.toFixed(1)} · draw ${g.msRender.toFixed(1)} ms`, GAME.width - 8, GAME.height - 30, { size: 12, align: 'right', color: '#8af59b', lw: 3 });
     if (renderer.portrait && input.touch.isTouchDevice) {
