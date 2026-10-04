@@ -534,6 +534,793 @@ __exports.FONT_TITLE = FONT_TITLE;
 __exports.FONT_UI = FONT_UI;
 __exports.COLORS = COLORS;
 });
+__def("src/net/Net.js", function(__exports, __req){
+// Partidas en red local (LAN) entre dos dispositivos, sin servidor de juego: conexión directa WebRTC
+// (DataChannel). Para establecerla los dos navegadores tienen que intercambiarse una "invitación" y una
+// "respuesta":
+//   · con el servidor LAN (node tools/lan.mjs) se hace sola con un código de 4 letras;
+//   · sin servidor, copiando y pegando los códigos (por WhatsApp, por ejemplo).
+//
+// El anfitrión (J1) simula el combate y envía el estado; el invitado (J2) envía sus mandos y dibuja.
+
+const PREFIX = 'SP1.';
+const ICE = [{ urls: 'stun:stun.l.google.com:19302' }]; // ayuda si el mDNS de la red no resuelve; en LAN no hace falta
+
+function b64urlEncode(bytes) {
+  let s = ''; for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(str) {
+  const s = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+async function pipe(bytes, stream) {
+  const blob = new Blob([bytes]).stream().pipeThrough(stream);
+  return new Uint8Array(await new Response(blob).arrayBuffer());
+}
+
+// SDP → código corto (comprimido) y vuelta
+async function encodeSignal(desc) {
+  const json = JSON.stringify({ t: desc.type, s: desc.sdp.split('\r\n').filter((l) => !/^a=(extmap|rtcp-fb|ssrc|msid)/.test(l)).join('\n') });
+  const raw = new TextEncoder().encode(json);
+  if (typeof CompressionStream !== 'undefined') {
+    try { return PREFIX + 'z' + b64urlEncode(await pipe(raw, new CompressionStream('deflate-raw'))); } catch { /* sin compresión */ }
+  }
+  return PREFIX + 'r' + b64urlEncode(raw);
+}
+
+async function decodeSignal(code) {
+  code = String(code).trim().replace(/\s+/g, '');
+  const i = code.indexOf(PREFIX);
+  if (i < 0) throw new Error('Código no válido');
+  code = code.slice(i + PREFIX.length);
+  const kind = code[0];
+  let bytes = b64urlDecode(code.slice(1));
+  if (kind === 'z') bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
+  const { t, s } = JSON.parse(new TextDecoder().decode(bytes));
+  return { type: t, sdp: s.split('\n').join('\r\n') + (s.endsWith('\n') ? '' : '\r\n') };
+}
+
+// ── servidor LAN opcional (tools/lan.mjs): sirve el juego y hace de servidor de señalización en casa ──
+const LanServer = {
+  async available() {
+    try {
+      const r = await fetch('/api/lan/ping', { cache: 'no-store' });
+      return r.ok && (await r.json()).ok === true;
+    } catch { return false; }
+  },
+};
+
+class NetSession {
+  constructor() {
+    this.role = null;         // 'host' | 'guest'
+    this.pc = null;
+    this.dc = null;
+    this.open = false;
+    this.handlers = new Map();
+    this.onClose = null;
+    this.rtt = 0;
+  }
+
+  get side() { return this.role === 'host' ? 0 : 1; }
+
+  on(type, fn) { this.handlers.set(type, fn); }
+  off(type) { this.handlers.delete(type); }
+
+  send(msg) {
+    if (!this.open) return false;
+    try { this.dc.send(JSON.stringify(msg)); return true; } catch { return false; }
+  }
+
+  _pc(ice = ICE) {
+    this.pc = new RTCPeerConnection({ iceServers: ice });
+    this.pc.onconnectionstatechange = () => {
+      const st = this.pc && this.pc.connectionState;
+      if (st === 'failed' || st === 'closed' || st === 'disconnected') this._closed();
+    };
+  }
+
+  _wireChannel(dc) {
+    this.dc = dc;
+    dc.onopen = () => {
+      this.open = true;
+      this._ping = setInterval(() => this.send({ t: 'ping', at: performance.now() }), 1000);
+      if (this.onOpen) this.onOpen();
+    };
+    dc.onclose = () => this._closed();
+    dc.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === 'ping') { this.send({ t: 'pong', at: m.at }); return; }
+      if (m.t === 'pong') { this.rtt = performance.now() - m.at; return; }
+      const h = this.handlers.get(m.t) || this.handlers.get('*');
+      if (h) h(m);
+    };
+  }
+
+  async _gathered() {
+    if (this.pc.iceGatheringState === 'complete') return;
+    await new Promise((res) => {
+      const done = () => { if (this.pc.iceGatheringState === 'complete') res(); };
+      this.pc.addEventListener('icegatheringstatechange', done);
+      setTimeout(res, 3000); // con los candidatos que haya
+    });
+  }
+
+  // Anfitrión: crea la invitación
+  async host() {
+    this.role = 'host';
+    this._pc();
+    this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
+    await this.pc.setLocalDescription(await this.pc.createOffer());
+    await this._gathered();
+    return encodeSignal(this.pc.localDescription);
+  }
+
+  // Anfitrión: recibe la respuesta del invitado
+  async acceptAnswer(code) {
+    const desc = await decodeSignal(code);
+    if (desc.type !== 'answer') throw new Error('Eso no es una respuesta: pega el código que te devuelve el invitado');
+    if (!this.pc) throw new Error('La invitación ha caducado: crea la partida otra vez');
+    // la respuesta solo se puede aplicar una vez (pegarla dos veces daba "called in wrong state: stable")
+    if (this.pc.signalingState !== 'have-local-offer') { if (this.open) return; throw new Error('Esta invitación ya se ha usado: crea la partida otra vez'); }
+    await this.pc.setRemoteDescription(desc);
+  }
+
+  // Invitado: con la invitación genera la respuesta
+  async join(code) {
+    this.role = 'guest';
+    const desc = await decodeSignal(code);
+    if (desc.type !== 'offer') throw new Error('Eso no es una invitación: pega el código del anfitrión');
+    this._pc();
+    this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
+    await this.pc.setRemoteDescription(desc);
+    await this.pc.setLocalDescription(await this.pc.createAnswer());
+    await this._gathered();
+    return encodeSignal(this.pc.localDescription);
+  }
+
+  _closed() {
+    if (!this.pc) return;
+    const was = this.open;
+    this.open = false;
+    clearInterval(this._ping);
+    try { this.dc && this.dc.close(); } catch { /* nada */ }
+    try { this.pc.close(); } catch { /* nada */ }
+    this.pc = null; this.dc = null;
+    if (was && this.onClose) this.onClose();
+  }
+
+  close() { this.onClose = null; this._closed(); }
+}
+
+// sesión global (una a la vez)
+const Net = { session: null };
+
+__exports.encodeSignal = encodeSignal;
+__exports.decodeSignal = decodeSignal;
+__exports.NetSession = NetSession;
+__exports.LanServer = LanServer;
+__exports.Net = Net;
+});
+__def("src/scenes/PadScene.js", function(__exports, __req){
+const { GAME } = __req("src/config/game.config.js");
+const { menuBackground, titleText, text, COLORS } = __req("src/ui/draw.js");
+const { Net } = __req("src/net/Net.js");
+
+// El móvil hecho mando: enseña los controles táctiles y manda los botones a la pantalla grande.
+class PadScene {
+  enter({ slot = 0 } = {}) {
+    const g = this.game;
+    this.t = 0;
+    this.slot = slot;
+    this.net = Net.session;
+    this.last = '';
+    this.sent = 0;
+    g.audio.playMusic(null, 4);
+    g.input.touch.inFight = true;
+    g.input.touch.forceVisible = true;
+    g.input.touch.suspended = false;
+    g.input.touch.reset();
+    if (this.net) {
+      this.net.onClose = () => { Net.session = null; g.input.pads.toast = { text: 'MANDO DESCONECTADO', t: 180 }; g.goto('title'); };
+    }
+    try { navigator.wakeLock && navigator.wakeLock.request('screen').then((l) => { this.lock = l; }).catch(() => {}); } catch { /* nada */ }
+  }
+
+  exit() {
+    const g = this.game;
+    g.input.touch.inFight = false; g.input.touch.forceVisible = false;
+    try { this.lock && this.lock.release(); } catch { /* nada */ }
+  }
+
+  update() {
+    this.t++;
+    const g = this.game, net = this.net;
+    if (!net || !net.open) return;
+    const inp = g.input.readLocal(0);
+    const pause = g.input.touch.pauseTapped || g.input.pausePressed(0);
+    g.input.touch.pauseTapped = false;
+    const sig = `${inp.x}|${inp.y}|${inp.mask}|${pause ? 1 : 0}`;
+    // al cambiar algo se manda enseguida; si no, cada cuarto de segundo para que la pantalla sepa que seguimos aquí
+    if (sig !== this.last || this.t - this.sent >= 15) {
+      this.last = sig; this.sent = this.t;
+      net.send({ t: 'in', x: inp.x, y: inp.y, m: inp.mask, p: pause ? 1 : 0 });
+    }
+    this.pressed = inp;
+  }
+
+  render(ctx) {
+    const W = GAME.width;
+    menuBackground(ctx, this.t, { c1: this.slot === 0 ? '#2b0b3f' : '#05233f', c2: '#05020a' });
+    titleText(ctx, `MANDO J${this.slot + 1}`, W / 2, 135, 60, { c1: '#ffffff', c2: this.slot === 0 ? COLORS.p1 : COLORS.p2 });
+    const ok = this.net && this.net.open;
+    text(ctx, ok ? `Conectado a la pantalla (${this.net.transport === 'directa' ? 'conexión directa' : 'por servidor'})` : 'Sin conexión', W / 2, 188, { size: 16, color: ok ? '#8af59b' : '#ff8a8a', lw: 3 });
+    text(ctx, 'Mira la pantalla grande · el stick mueve, los botones atacan', W / 2, 212, { size: 14, color: COLORS.dim, lw: 3 });
+    text(ctx, 'En los menús: Puño o Patada = aceptar · Fuerte = volver', W / 2, 234, { size: 14, color: COLORS.dim, lw: 3 });
+  }
+}
+
+__exports.PadScene = PadScene;
+});
+__def("src/net/Relay.js", function(__exports, __req){
+// Plan B del online: cuando las redes no dejan conexión directa (datos móviles, routers estrictos…), los
+// mensajes del combate viajan por un servidor público de mensajería MQTT (gratuito, sin registro), cada
+// jugador publicando en su "tema" y escuchando el del otro. Va por WebSocket seguro, así que atraviesa
+// cualquier red que tenga internet. Cliente MQTT 3.1.1 mínimo escrito a mano (sin librerías).
+
+const BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
+  'wss://mqtt.eclipseprojects.io:443/mqtt',
+];
+
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+function str(s) { const b = enc.encode(s); return [b.length >> 8, b.length & 255, ...b]; }
+function varint(n) { const out = []; do { let d = n % 128; n = Math.floor(n / 128); if (n > 0) d |= 128; out.push(d); } while (n > 0); return out; }
+function packet(type, body) { const b = body instanceof Uint8Array ? body : Uint8Array.from(body); const h = [type, ...varint(b.length)]; const out = new Uint8Array(h.length + b.length); out.set(h); out.set(b, h.length); return out; }
+
+class MqttLink {
+  constructor(url) { this.url = url; this.ws = null; this.onMessage = null; this.onDrop = null; this.buf = new Uint8Array(0); this.pid = 1; }
+
+  connect(timeout = 5000) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const fail = (e) => { if (done) return; done = true; clearTimeout(t); try { this.ws && this.ws.close(); } catch { /* nada */ } reject(e); };
+      const t = setTimeout(() => fail(new Error('timeout')), timeout);
+      let ws;
+      try { ws = new WebSocket(this.url, ['mqtt']); } catch (e) { fail(e); return; }
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+      ws.onopen = () => {
+        const id = 'pumas-' + Math.random().toString(36).slice(2, 12);
+        ws.send(packet(0x10, [...str('MQTT'), 4, 0x02, 0, 30, ...str(id)]));
+      };
+      ws.onmessage = (e) => {
+        const data = new Uint8Array(e.data);
+        const all = new Uint8Array(this.buf.length + data.length); all.set(this.buf); all.set(data, this.buf.length);
+        this.buf = all;
+        this._parse((type, body) => {
+          if ((type & 0xf0) === 0x20 && !done) { // CONNACK
+            if (body[1] === 0) { done = true; clearTimeout(t); this._ping = setInterval(() => this._send(packet(0xc0, [])), 20000); resolve(this); } else fail(new Error('broker rechaza'));
+          }
+        });
+      };
+      ws.onerror = () => fail(new Error('no conecta'));
+      ws.onclose = () => { clearInterval(this._ping); if (!done) fail(new Error('cerrado')); else if (this.onDrop) this.onDrop(); };
+    });
+  }
+
+  _parse(onPacket) {
+    for (;;) {
+      const b = this.buf;
+      if (b.length < 2) return;
+      let len = 0, mul = 1, i = 1, byte;
+      do { if (i >= b.length) return; byte = b[i++]; len += (byte & 127) * mul; mul *= 128; } while (byte & 128);
+      if (b.length < i + len) return;
+      const type = b[0] & 0xf0, body = b.subarray(i, i + len);
+      this.buf = b.slice(i + len);
+      if (type === 0x30) { // PUBLISH (QoS 0)
+        const tl = (body[0] << 8) | body[1];
+        const topic = dec.decode(body.subarray(2, 2 + tl));
+        const qos = (b[0] >> 1) & 3;
+        const payload = body.subarray(2 + tl + (qos ? 2 : 0));
+        if (this.onMessage) this.onMessage(topic, dec.decode(payload));
+      } else onPacket(b[0], body);
+    }
+  }
+
+  _send(bytes) { try { if (this.ws && this.ws.readyState === 1) { this.ws.send(bytes); return true; } } catch { /* nada */ } return false; }
+
+  subscribe(topic) {
+    const id = this.pid++;
+    this._send(packet(0x82, [id >> 8, id & 255, ...str(topic), 0]));
+  }
+
+  publish(topic, text) {
+    const t = str(topic), p = enc.encode(text);
+    const body = new Uint8Array(t.length + p.length); body.set(t); body.set(p, t.length);
+    return this._send(packet(0x30, body));
+  }
+
+  get buffered() { return this.ws ? this.ws.bufferedAmount : 0; }
+
+  close() { clearInterval(this._ping); this.onMessage = null; this.onDrop = null; try { this._send(packet(0xe0, [])); this.ws && this.ws.close(); } catch { /* nada */ } this.ws = null; }
+}
+
+// Conecta con el primer servidor que responda (o con uno concreto)
+async function connectBroker(urls) {
+  for (const u of urls) {
+    try { return await new MqttLink(u).connect(); } catch { /* el siguiente */ }
+  }
+  return null;
+}
+
+// Conecta a la vez con todos y se queda con el primero que responda (los demás se cierran)
+function connectAnyBroker(urls, timeout = 6000) {
+  return new Promise((resolve) => {
+    let left = urls.length, won = null;
+    if (!left) { resolve(null); return; }
+    for (const u of urls) {
+      new MqttLink(u).connect(timeout).then((link) => {
+        if (won) { link.close(); return; }
+        won = link; resolve(link);
+      }).catch(() => { if (--left === 0 && !won) resolve(null); });
+    }
+  });
+}
+
+__exports.MqttLink = MqttLink;
+__exports.connectBroker = connectBroker;
+__exports.connectAnyBroker = connectAnyBroker;
+__exports.BROKERS = BROKERS;
+});
+__def("src/net/Online.js", function(__exports, __req){
+// Partida online con un código de 4 letras, sin servidor propio.
+//
+// Todo va por servidores públicos y gratuitos de mensajería MQTT (ver Relay.js). Cada partida usa el "tema"
+// streetpumas/v1/c/<código>: el anfitrión escucha en g2h y el invitado en h2g, en TODOS los servidores que
+// respondan (así basta con que los dos lleguen a uno cualquiera).
+//   1) Emparejamiento: el invitado manda su petición ("offer"); el anfitrión contesta ("answer") por el
+//      servidor por el que le llegó, y a partir de ahí los dos usan solo ese.
+//   2) Conexión directa WebRTC (lo más rápido), negociada por ese mismo canal.
+//   3) Si en unos segundos no hay conexión directa (datos móviles, routers estrictos…), el combate sigue
+//      por el servidor de mensajería.
+// Si algo falla, el aviso dice qué paso ha fallado.
+const { NetSession } = __req("src/net/Net.js");
+const { MqttLink, BROKERS } = __req("src/net/Relay.js");
+
+const CLOUD_SIGNAL = { brokers: BROKERS };
+const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const rand = (n) => Math.random().toString(36).slice(2, 2 + n);
+const codeBase = (code) => `streetpumas/v1/c/${code.toLowerCase()}`;
+const P2P_WAIT = 6000;      // ms esperando la conexión directa antes de seguir por el servidor
+const FAIL_MSG = 'No se ha podido conectar.';
+
+// STUN para descubrir la IP pública de cada uno (conexión directa)
+const ONLINE_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+
+function newCode() { let c = ''; for (let i = 0; i < 4; i++) c += LETTERS[Math.floor(Math.random() * LETTERS.length)]; return c; }
+
+// Conecta con todos los servidores a la vez; onLink(link) por cada uno que responda.
+// Se resuelve con el número de conectados en cuanto conecta el primero (o 0 si no conecta ninguno).
+function connectAll(urls, onLink, timeout = 7000) {
+  return new Promise((resolve) => {
+    let left = urls.length, ok = 0;
+    if (!left) resolve(0);
+    for (const url of urls) {
+      new MqttLink(url).connect(timeout)
+        .then((link) => { ok++; onLink(link); resolve(ok); })
+        .catch(() => {})
+        .finally(() => { if (--left === 0) resolve(ok); });
+    }
+  });
+}
+
+class OnlineSession extends NetSession {
+  // server: { brokers, ice?, forceRelay? }
+  constructor(server = CLOUD_SIGNAL) {
+    super();
+    this.server = server;
+    this.brokers = server.brokers || BROKERS;
+    this.me = rand(8);       // id de este dispositivo en la partida
+    this.peer = null;        // id del otro
+    this.links = [];         // conexiones abiertas con servidores de mensajería
+    this.link = null;        // la elegida para esta partida
+    this.pending = [];       // candidatos de red que llegan antes de la descripción remota
+    this.outbox = [];
+    this.onError = null;
+    this.onModeInfo = null;
+    this.code = null;
+    this.mode = null;        // 'p2p' | 'relay'
+    this.diag = { servidores: 'sin probar', anfitrion: 'sin probar', directa: 'sin probar', servidor: 'sin probar' };
+  }
+
+  get lossy() { return this.mode === 'relay'; }
+  get stateEvery() { return this.lossy ? 2 : 1; }
+  get transport() { return this.mode === 'p2p' ? 'directa' : this.mode ? 'servidor' : ''; }
+
+  _failMsg(extra = '') {
+    const d = this.diag;
+    return `${FAIL_MSG}${extra ? ' ' + extra : ''} [servidores: ${d.servidores} · anfitrión: ${d.anfitrion} · directa: ${d.directa} · por servidor: ${d.servidor}]`;
+  }
+  _info(t) { if (this.onModeInfo) this.onModeInfo(t); }
+  _err(msg) {
+    if (this._failed || this.open) return;
+    this._failed = true;
+    this._clearTimers();
+    if (this.onError) this.onError(new Error(msg));
+  }
+  _clearTimers() { clearTimeout(this._wd); clearTimeout(this._p2pTimer); clearInterval(this._hello); clearInterval(this._offerLoop); clearInterval(this._ping); }
+
+  _watchdog(ms, msg) { clearTimeout(this._wd); this._wd = setTimeout(() => { if (!this.open) this._err(msg || this._failMsg()); }, ms); }
+
+  // ── canal de mensajería ──
+  get topicIn() { return codeBase(this.code) + (this.role === 'host' ? '/g2h' : '/h2g'); }
+  get topicOut() { return codeBase(this.code) + (this.role === 'host' ? '/h2g' : '/g2h'); }
+
+  _addLink(link) {
+    if (this._closedForGood || (this.open && this.mode === 'p2p') || this.link) { link.close(); return; }
+    this.links.push(link);
+    link.subscribe(this.topicIn);
+    link.onMessage = (topic, text) => this._in(text, link);
+    link.onDrop = () => {
+      this.links = this.links.filter((l) => l !== link);
+      if (this.link === link) { if (this.open && this.mode === 'relay') { this._closed(); return; } this.link = null; }
+      // mientras se espera, se vuelve a conectar (el móvil puede cortar la conexión al cambiar de app)
+      if (!this.open && !this._failed && !this._closedForGood) setTimeout(() => this._reconnect(link.url), 1500);
+    };
+  }
+
+  _reconnect(url) {
+    if (this.open || this._failed || this._closedForGood || this.link || this.links.some((l) => l.url === url)) return;
+    new MqttLink(url).connect(7000).then((l) => this._addLink(l)).catch(() => setTimeout(() => this._reconnect(url), 4000));
+  }
+
+  _pub(obj, link = this.link) { if (link) link.publish(this.topicOut, JSON.stringify(Array.isArray(obj) ? obj : [obj])); }
+  _pubAll(obj) { for (const l of this.links) this._pub(obj, l); }
+
+  // se queda con el servidor por el que ha llegado el otro; los demás se cierran
+  _choose(link) {
+    if (this.link === link) return;
+    this.link = link;
+    for (const l of this.links) if (l !== link) { l.onDrop = null; l.close(); }
+    this.links = [link];
+    if (this.localCands && this.localCands.length) { this._pub(this.localCands); this.localCands = []; }
+  }
+
+  // ── envío / recepción ──
+  send(msg) {
+    if (!this.open) return false;
+    if (this.mode === 'p2p') return super.send(msg);
+    this.outbox.push(msg);
+    if (!this._queued) { this._queued = true; Promise.resolve().then(() => this._flushRelay()); }
+    return true;
+  }
+
+  _flushRelay() {
+    this._queued = false;
+    if (!this.outbox.length || !this.link) return;
+    const out = this.outbox; this.outbox = [];
+    // si el servidor va atascado, se descartan los estados viejos (llega el siguiente) pero nunca los mensajes de menú
+    const list = this.link.buffered > 64 * 1024 ? out.filter((m) => m.t !== 'st' && m.t !== 'ping') : out;
+    if (list.length) this._pub({ t: 'g', l: list });
+  }
+
+  _dispatch(m) {
+    if (m.t === 'ping') { this.send({ t: 'pong', at: m.at }); return; }
+    if (m.t === 'pong') { this.rtt = performance.now() - m.at; return; }
+    const h = this.handlers.get(m.t) || this.handlers.get('*');
+    if (h) h(m);
+  }
+
+  _in(text, link) {
+    let list; try { list = JSON.parse(text); } catch { return; }
+    for (const m of Array.isArray(list) ? list : [list]) {
+      if (m.t === 'g') { if (this.mode === 'relay' && link === this.link) for (const x of m.l) this._dispatch(x); continue; }
+      if (this.role === 'host') this._hostMsg(m, link); else this._guestMsg(m, link);
+    }
+  }
+
+  _opened(mode) {
+    if (this.open) return;
+    this.mode = mode;
+    this.open = true;
+    this._clearTimers();
+    this._ping = setInterval(() => this.send({ t: 'ping', at: performance.now() }), 1000);
+    if (mode === 'relay') {
+      // la conexión directa ya no se usa
+      if (this.pc) { const pc = this.pc; this.pc = null; this.dc = null; try { pc.close(); } catch { /* nada */ } }
+    } else {
+      // directo: los servidores de mensajería ya no hacen falta
+      setTimeout(() => { if (this.mode === 'p2p') { for (const l of this.links) { l.onDrop = null; l.close(); } this.links = []; this.link = null; } }, 1500);
+    }
+    if (this.onOpen) this.onOpen();
+  }
+
+  // ── WebRTC ──
+  _pc() {
+    super._pc(this.server.ice || ONLINE_ICE);
+    this.localCands = [];
+    this.pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const m = { t: 'cand', from: this.me, c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate };
+      if (this.link) this._pub(m); else this.localCands.push(m); // aún no se sabe por qué servidor: se guardan
+    };
+    this.pc.onconnectionstatechange = () => {
+      const st = this.pc && this.pc.connectionState;
+      if (this.open && this.mode === 'p2p' && (st === 'failed' || st === 'closed' || st === 'disconnected')) this._closed();
+      else if (!this.open && st === 'failed' && this.role === 'guest') { this.diag.directa = 'bloqueada'; this._toRelay(); }
+    };
+  }
+
+  _wireChannel(dc) {
+    this.dc = dc;
+    dc.onopen = () => { this.diag.directa = 'OK'; this._opened('p2p'); };
+    dc.onclose = () => { if (this.mode === 'p2p') this._closed(); };
+    dc.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } this._dispatch(m); };
+  }
+
+  async _candidate(c) {
+    if (!this.pc || !c) return;
+    if (!this.pc.remoteDescription) { this.pending.push(c); return; }
+    try { await this.pc.addIceCandidate(c); } catch { /* candidato no válido: se ignora */ }
+  }
+
+  async _flush() { const p = this.pending; this.pending = []; for (const c of p) await this._candidate(c); }
+
+  // ── ANFITRIÓN ──
+  async host() {
+    this.role = 'host';
+    this.code = newCode();
+    this.diag.servidores = 'conectando';
+    const n = await connectAll(this.brokers, (l) => this._addLink(l));
+    if (!n) { this.diag.servidores = 'ninguno responde'; throw new Error('No se puede conectar con los servidores del online. ¿Hay internet? Prueba PROBAR CONEXIÓN.'); }
+    this.diag.servidores = 'OK';
+    return this.code;
+  }
+
+  async _hostMsg(m, link) {
+    if (m.t === 'offer') {
+      if (this.peer && this.peer !== m.from && (this.open || this.pc)) return; // ya hay un invitado
+      if (this._answer && this._answer.to === m.from) { this._pub(this._answer, link); return; } // petición repetida
+      this.peer = m.from;
+      this._choose(link);
+      this._info('Tu amigo está entrando…');
+      const answer = { t: 'answer', to: m.from, from: this.me, sdp: null };
+      if (m.sdp && typeof RTCPeerConnection === 'function') {
+        this._pc();
+        this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
+        try {
+          await this.pc.setRemoteDescription(m.sdp);
+          await this._flush();
+          await this.pc.setLocalDescription(await this.pc.createAnswer());
+          const d = this.pc.localDescription;
+          answer.sdp = d && d.toJSON ? d.toJSON() : { type: d.type, sdp: d.sdp };
+        } catch { answer.sdp = null; }
+      }
+      this._answer = answer;
+      this._pub(answer);
+    } else if (m.from !== this.peer) {
+      // de otro dispositivo: no es para nosotros
+    } else if (m.t === 'cand') this._candidate(m.c);
+    else if (m.t === 'hello') {
+      // el invitado no consigue conexión directa: seguimos por el servidor (también si se perdió la confirmación)
+      if (!this.link) this._choose(link);
+      this._pub({ t: 'ack', from: this.me, to: m.from }, link);
+      this._opened('relay');
+    }
+  }
+
+  // ── INVITADO ──
+  async join(code) {
+    code = String(code || '').trim().toUpperCase();
+    if (!/^[A-Z]{4}$/.test(code)) throw new Error('El código son 4 letras');
+    this.role = 'guest';
+    this.code = code;
+    this.diag.servidores = 'conectando';
+    const n = await connectAll(this.brokers, (l) => this._addLink(l));
+    if (!n) { this.diag.servidores = 'ninguno responde'; throw new Error('No se puede conectar con los servidores del online. ¿Hay internet? Prueba PROBAR CONEXIÓN.'); }
+    this.diag.servidores = 'OK';
+    let sdp = null;
+    if (!this.server.forceRelay && typeof RTCPeerConnection === 'function') {
+      this._pc();
+      this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
+      await this.pc.setLocalDescription(await this.pc.createOffer());
+      const d = this.pc.localDescription;
+      sdp = d.toJSON ? d.toJSON() : { type: d.type, sdp: d.sdp };
+    } else this.diag.directa = 'desactivada';
+    // la petición se repite (en todos los servidores) hasta que el anfitrión conteste
+    const offer = { t: 'offer', from: this.me, sdp };
+    this.diag.anfitrion = 'sin respuesta';
+    this._pubAll(offer);
+    this._offerLoop = setInterval(() => {
+      if (this._answered || this.open || this._failed) { clearInterval(this._offerLoop); return; }
+      this._info('Esperando al anfitrión… tiene que tener el juego abierto y en pantalla.');
+      this._pubAll(offer);
+    }, 2000);
+    this._watchdog(90000, this._failMsg(`El anfitrión no contesta: tiene que tener la partida ${this.code} creada y el juego abierto en pantalla (en la página de GitHub, no en claude.ai).`));
+  }
+
+  async _guestMsg(m, link) {
+    if (m.to !== this.me) return;
+    if (m.t === 'answer') {
+      if (this._answered) return; // solo la primera respuesta (evita "called in wrong state: stable")
+      this._answered = true;
+      clearInterval(this._offerLoop);
+      this.peer = m.from;
+      this.diag.anfitrion = 'OK';
+      this._choose(link);
+      this._info('Conectando…');
+      if (m.sdp && this.pc && this.pc.signalingState === 'have-local-offer') {
+        this.diag.directa = 'probando';
+        try { await this.pc.setRemoteDescription(m.sdp); await this._flush(); } catch { this.diag.directa = 'error'; }
+        this._p2pTimer = setTimeout(() => { if (this.diag.directa === 'probando') this.diag.directa = 'no conecta'; this._toRelay(); }, P2P_WAIT);
+        this._watchdog(P2P_WAIT + 15000);
+      } else this._toRelay();
+    } else if (m.t === 'cand' && m.from === this.peer) {
+      this._candidate(m.c);
+    } else if (m.t === 'ack') {
+      this.diag.servidor = 'OK';
+      this._opened('relay');
+    }
+  }
+
+  // sin conexión directa: se sigue por el servidor de mensajería elegido
+  _toRelay() {
+    if (this.open || this._relayStarted || this._failed) return;
+    this._relayStarted = true;
+    clearTimeout(this._p2pTimer);
+    this._info('Sin conexión directa: conectando por servidor…');
+    this.diag.servidor = 'sin respuesta';
+    const hello = () => this._pub({ t: 'hello', from: this.me, to: this.peer });
+    hello();
+    this._hello = setInterval(hello, 400);
+    this._watchdog(12000);
+  }
+
+  _closed() {
+    this._clearTimers();
+    if (!this.open) return;
+    this.open = false;
+    try { this.dc && this.dc.close(); } catch { /* nada */ }
+    try { this.pc && this.pc.close(); } catch { /* nada */ }
+    for (const l of this.links) { l.onDrop = null; l.close(); }
+    this.links = []; this.link = null; this.pc = null; this.dc = null;
+    if (this.onClose) this.onClose();
+  }
+
+  close() {
+    this._closedForGood = true;
+    this.onClose = null;
+    this._clearTimers();
+    for (const l of this.links) { l.onDrop = null; l.close(); }
+    this.links = []; this.link = null;
+    try { this.dc && this.dc.close(); } catch { /* nada */ }
+    try { this.pc && this.pc.close(); } catch { /* nada */ }
+    this.pc = null; this.dc = null; this.open = false;
+  }
+}
+
+// ── Prueba de conexión: comprueba cada pieza del online desde este dispositivo ──
+async function probeConnection(server = CLOUD_SIGNAL, onStep = () => {}) {
+  const out = [];
+  const step = (name, ok, info) => { out.push({ name, ok, info }); onStep(out.slice()); };
+  // 1) servidores de mensajería (emparejamiento y plan B): conectar y recibir un mensaje propio
+  let anyOk = false;
+  await Promise.all((server.brokers || BROKERS).map(async (url) => {
+    const host = url.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
+    const t0 = performance.now();
+    const link = await new MqttLink(url).connect(6000).catch(() => null);
+    if (!link) { step(`Servidor ${host}`, false, 'no conecta'); return; }
+    const topic = `streetpumas/v1/probe/${rand(8)}`;
+    const got = await new Promise((res) => {
+      const timer = setTimeout(() => res(false), 5000);
+      link.onMessage = (t) => { if (t === topic) { clearTimeout(timer); res(true); } };
+      link.subscribe(topic);
+      setTimeout(() => link.publish(topic, '[]'), 300);
+    });
+    link.close();
+    if (got) anyOk = true;
+    step(`Servidor ${host}`, got, got ? `OK (${Math.round(performance.now() - t0)} ms)` : 'conecta pero no reenvía');
+  }));
+  // 2) conexión directa: ¿se consigue la IP pública por STUN?
+  if (typeof RTCPeerConnection === 'function') {
+    const pc = new RTCPeerConnection({ iceServers: server.ice || ONLINE_ICE });
+    pc.createDataChannel('t');
+    const kinds = new Set();
+    pc.onicecandidate = (e) => { if (e.candidate) kinds.add(e.candidate.type || (/ typ (\w+)/.exec(e.candidate.candidate) || [])[1]); };
+    try { await pc.setLocalDescription(await pc.createOffer()); } catch { /* nada */ }
+    await new Promise((r) => setTimeout(r, 3500));
+    pc.close();
+    const srflx = kinds.has('srflx');
+    step('Conexión directa', srflx, srflx ? 'OK (IP pública encontrada)' : kinds.size ? 'solo red local (irá por servidor)' : 'bloqueada (irá por servidor)');
+  } else step('Conexión directa', false, 'el navegador no la permite');
+  step('Online', anyOk, anyOk ? 'debería funcionar' : 'ningún servidor funciona desde aquí');
+  return out;
+}
+
+__exports.newCode = newCode;
+__exports.OnlineSession = OnlineSession;
+__exports.probeConnection = probeConnection;
+__exports.CLOUD_SIGNAL = CLOUD_SIGNAL;
+__exports.ONLINE_ICE = ONLINE_ICE;
+});
+__def("src/net/PadHub.js", function(__exports, __req){
+// Móviles como mandos: la pantalla grande (ordenador, proyector…) ofrece un código por jugador; desde un
+// móvil, ONLINE → UNIRSE A UNA PARTIDA con ese código, y el móvil pasa a ser el mando de J1 o de J2.
+// Va por el mismo sistema que el online (conexión directa o servidor de mensajería). El móvil manda sus
+// botones y la pantalla grande los trata como un mando más (en menús y en combate).
+const { OnlineSession, CLOUD_SIGNAL } = __req("src/net/Online.js");
+const { text, COLORS } = __req("src/ui/draw.js");
+
+const PadHub = {
+  slots: [null, null],     // { net, code, connected, status }
+  started: false,
+  input: null,             // InputManager: se le pasan los mandos remotos
+  server: CLOUD_SIGNAL,
+
+  // empieza a ofrecer los códigos (una sola vez; luego se mantienen solos)
+  ensure(input) {
+    this.input = input || this.input;
+    if (this.started) return;
+    this.started = true;
+    if (typeof window !== 'undefined') window.__padHub = this; // (pruebas)
+    try {
+      const q = new URLSearchParams(location.search);
+      if (q.get('broker')) this.server = { brokers: q.getAll('broker') };
+    } catch { /* nada */ }
+    for (let i = 0; i < 2; i++) this._host(i);
+  },
+
+  _host(i) {
+    const slot = this.slots[i] = { net: null, code: null, connected: false, status: 'creando código…' };
+    const net = new OnlineSession(this.server);
+    slot.net = net;
+    net.onOpen = () => {
+      slot.connected = true; slot.status = 'conectado';
+      net.send({ t: 'pad', slot: i });
+      if (this.input && this.input.pads) this.input.pads.toast = { text: `MÓVIL CONECTADO COMO MANDO J${i + 1}`, t: 150 };
+    };
+    net.on('in', (m) => {
+      if (!this.input) return;
+      const now = performance.now(), prev = this.input.remote[i];
+      const r = { x: m.x || 0, y: m.y || 0, mask: m.m || 0, pause: !!m.p, at: now };
+      // un toque muy corto (pulsar y soltar entre dos frames) se mantiene un instante para que no se pierda
+      if (r.x || r.y || r.mask || r.pause) { r.lx = r.x; r.ly = r.y; r.lmask = r.mask; r.lpause = r.pause; r.until = now + 60; }
+      else if (prev && prev.until > now) { r.lx = prev.lx; r.ly = prev.ly; r.lmask = prev.lmask; r.lpause = prev.lpause; r.until = prev.until; }
+      this.input.remote[i] = r;
+    });
+    net.onClose = () => {
+      if (this.input) this.input.remote[i] = null;
+      if (this.input && this.input.pads) this.input.pads.toast = { text: `MANDO MÓVIL J${i + 1} DESCONECTADO`, t: 150 };
+      setTimeout(() => this._host(i), 500); // código nuevo para volver a conectar
+    };
+    net.onError = () => { if (!slot.connected) { try { net.close(); } catch { /* nada */ } setTimeout(() => this._host(i), 3000); } };
+    net.host().then((code) => { slot.code = code; slot.status = 'esperando'; })
+      .catch(() => { slot.status = 'sin conexión'; setTimeout(() => { if (this.slots[i] === slot) this._host(i); }, 8000); });
+  },
+
+  // texto para enseñar en pantalla
+  label(i) {
+    const s = this.slots[i];
+    if (!s) return '';
+    if (s.connected) return `J${i + 1}: móvil conectado`;
+    return s.code ? `J${i + 1}: ${s.code}` : `J${i + 1}: ${s.status}`;
+  },
+};
+
+// Línea con los códigos (para las pantallas de 2 jugadores y torneo)
+function drawPadCodes(ctx, x, y, size = 13) {
+  const a = PadHub.label(0), b = PadHub.label(1);
+  if (!a && !b) return;
+  text(ctx, `MÓVIL COMO MANDO (ONLINE → UNIRSE):  ${a}   ·   ${b}`, x, y, { size, color: COLORS.gold, lw: 3 });
+}
+
+__exports.drawPadCodes = drawPadCodes;
+__exports.PadHub = PadHub;
+});
 __def("src/characters/defaults.js", function(__exports, __req){
 // Plantilla de movimientos normales compartida por todos los luchadores.
 // Cada personaje puede sobrescribir cualquier campo en su archivo de datos (moves: { '5H': { damage: 90 } }).
@@ -4093,6 +4880,7 @@ function catchphrase(def) {
 __exports.catchphrase = catchphrase;
 });
 __def("src/scenes/TournamentScenes.js", function(__exports, __req){
+const { PadHub, drawPadCodes } = __req("src/net/PadHub.js");
 const { GAME } = __req("src/config/game.config.js");
 const { Menu, menuBackground, titleText, text, COLORS, FONT_TITLE, panel, inRect } = __req("src/ui/draw.js");
 const { ROSTER, BOSSES, getCharacter } = __req("src/characters/index.js");
@@ -4111,6 +4899,7 @@ const COLS = 8, TILE = 66, GAP = 6;
 class TournamentSetupScene {
   enter() {
     this.t = 0;
+    PadHub.ensure(this.game.input);
     this.pool = [...ROSTER, ...BOSSES.filter((b) => Storage.isUnlocked(b.id))];
     const prev = this.game.session && this.game.session.tsetup;
     this.count = prev ? prev.count : 8;
@@ -4239,6 +5028,7 @@ class TournamentSetupScene {
       panel(ctx, r.x, r.y, r.w, r.h, { fill: s ? 'rgba(255,120,140,0.92)' : hot ? 'rgba(40,120,60,0.9)' : 'rgba(20,10,34,0.8)', stroke: s ? '#fff3b0' : 'rgba(255,255,255,0.15)', r: 10, lw: s ? 3 : 2 });
       text(ctx, b.label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 20, color: s ? '#1a0b22' : '#fff' });
     });
+    drawPadCodes(ctx, W / 2, GAME.height - 40, 12);
     if (this.msg) text(ctx, this.msg.t, W / 2, GAME.height - 18, { size: 16, color: this.msg.color, lw: 4 });
     else text(ctx, 'Los combates entre dos HUMANOS se juegan con los controles del Jugador 1 y del Jugador 2', W / 2, GAME.height - 18, { size: 13, color: COLORS.dim, lw: 3 });
   }
@@ -4253,6 +5043,7 @@ class TournamentScene {
     this.t = 0;
     this.tour = s && s.tournament;
     if (!this.tour) { g.goto('title'); return; }
+    PadHub.ensure(g.input);
     this.next = nextMatch(this.tour);
     this.flashWinner = null;
     const items = [];
@@ -4375,6 +5166,7 @@ class TournamentScene {
     const a = getCharacter(match.a.id), b = getCharacter(match.b.id);
     const y = this.menu.y - 22;
     text(ctx, `${a.name.toUpperCase()}${match.a.cpu ? ' (CPU)' : ''}  VS  ${b.name.toUpperCase()}${match.b.cpu ? ' (CPU)' : ''}`, W / 2, y, { size: 22, font: FONT_TITLE, color: '#fff', lw: 5 });
+    drawPadCodes(ctx, W / 2, GAME.height - 10, 11);
     if (this.flashWinner && this.t < 150) text(ctx, `Simulado: gana ${getCharacter(this.flashWinner.id).name}`, W / 2, 58 + 18, { size: 13, color: '#8af59b', lw: 3 });
     this.menu.draw(ctx);
   }
@@ -5007,6 +5799,7 @@ const ACTIONS = ['up', 'down', 'left', 'right', 'L', 'H', 'K', 'S', 'X', 'B', 'p
 // Produce estados "crudos" por jugador ({x, y, mask}) y eventos de menú por frame.
 class InputManager {
   constructor(renderer) {
+    this.remote = [null, null]; // móviles conectados como mandos (PadHub)
     this.renderer = renderer;
     this.keys = new Set();
     this.maps = { p1: KEYBOARD.p1, p2: KEYBOARD.p2 };
@@ -5073,12 +5866,24 @@ class InputManager {
     let y = (act('down') ? 1 : 0) - (act('up') ? 1 : 0);
     let mask = 0;
     for (const k of ['L', 'H', 'K', 'S', 'X', 'B']) if (act(k)) mask |= BTN[k];
+    // móvil usado como mando de este jugador
+    const r = this._remote(player);
+    if (r) { if (r.x) x = r.x; if (r.y) y = r.y; mask |= r.mask; }
     if (player === 0 && this.touch && this.touch.active) {
       const t = this.touch.read();
       if (t.x) x = t.x; if (t.y) y = t.y;
       mask |= t.mask;
     }
     return { x, y, mask };
+  }
+
+  // estado del móvil-mando de un jugador (si lleva más de 1,5 s sin noticias, se ignora)
+  _remote(p) {
+    const r = this.remote && this.remote[p];
+    const now = performance.now();
+    if (!r || now - r.at > 1500) return null;
+    if (r.until > now) return { x: r.x || r.lx, y: r.y || r.ly, mask: r.mask | r.lmask, pause: r.pause || r.lpause };
+    return r;
   }
 
   pausePressed(player) {
@@ -5119,6 +5924,11 @@ class InputManager {
       now.back = (p === 0 ? this._keyAction(KEYBOARD.menu, 'back') : this._keyAction(map, 'H'))
         || pads.action(p, 'back');
       if (p === 0 && this.touch && this.touch.pauseTapped) { now.pause = true; this.touch.pauseTapped = false; }
+      const r = this._remote(p);
+      if (r) {
+        now.up = now.up || r.y < 0; now.down = now.down || r.y > 0; now.left = now.left || r.x < 0; now.right = now.right || r.x > 0;
+        now.confirm = now.confirm || !!(r.mask & (BTN.L | BTN.K)); now.back = now.back || !!(r.mask & BTN.H); now.pause = now.pause || r.pause;
+      }
       const edges = {};
       for (const a of Object.keys(now)) {
         if (now[a] && !st.prev[a]) { edges[a] = true; st.hold[a] = 0; }
@@ -5161,7 +5971,7 @@ class TouchControls {
   get visible() {
     const s = Storage.settings.touchControls;
     // en automático se ocultan si se está jugando con un mando (p. ej. un mando bluetooth en el móvil)
-    return s === 'on' || (s === 'auto' && this.isTouchDevice && !this.padInUse);
+    return this.forceVisible || s === 'on' || (s === 'auto' && this.isTouchDevice && !this.padInUse);
   }
   // en pausa los controles táctiles se apagan para que los toques lleguen al menú (antes se los tragaban)
   get active() { return this.inFight && this.visible && !this.suspended; }
@@ -7342,175 +8152,8 @@ class TitleScene {
 
 __exports.TitleScene = TitleScene;
 });
-__def("src/net/Net.js", function(__exports, __req){
-// Partidas en red local (LAN) entre dos dispositivos, sin servidor de juego: conexión directa WebRTC
-// (DataChannel). Para establecerla los dos navegadores tienen que intercambiarse una "invitación" y una
-// "respuesta":
-//   · con el servidor LAN (node tools/lan.mjs) se hace sola con un código de 4 letras;
-//   · sin servidor, copiando y pegando los códigos (por WhatsApp, por ejemplo).
-//
-// El anfitrión (J1) simula el combate y envía el estado; el invitado (J2) envía sus mandos y dibuja.
-
-const PREFIX = 'SP1.';
-const ICE = [{ urls: 'stun:stun.l.google.com:19302' }]; // ayuda si el mDNS de la red no resuelve; en LAN no hace falta
-
-function b64urlEncode(bytes) {
-  let s = ''; for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-function b64urlDecode(str) {
-  const s = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
-  return Uint8Array.from(s, (c) => c.charCodeAt(0));
-}
-async function pipe(bytes, stream) {
-  const blob = new Blob([bytes]).stream().pipeThrough(stream);
-  return new Uint8Array(await new Response(blob).arrayBuffer());
-}
-
-// SDP → código corto (comprimido) y vuelta
-async function encodeSignal(desc) {
-  const json = JSON.stringify({ t: desc.type, s: desc.sdp.split('\r\n').filter((l) => !/^a=(extmap|rtcp-fb|ssrc|msid)/.test(l)).join('\n') });
-  const raw = new TextEncoder().encode(json);
-  if (typeof CompressionStream !== 'undefined') {
-    try { return PREFIX + 'z' + b64urlEncode(await pipe(raw, new CompressionStream('deflate-raw'))); } catch { /* sin compresión */ }
-  }
-  return PREFIX + 'r' + b64urlEncode(raw);
-}
-
-async function decodeSignal(code) {
-  code = String(code).trim().replace(/\s+/g, '');
-  const i = code.indexOf(PREFIX);
-  if (i < 0) throw new Error('Código no válido');
-  code = code.slice(i + PREFIX.length);
-  const kind = code[0];
-  let bytes = b64urlDecode(code.slice(1));
-  if (kind === 'z') bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
-  const { t, s } = JSON.parse(new TextDecoder().decode(bytes));
-  return { type: t, sdp: s.split('\n').join('\r\n') + (s.endsWith('\n') ? '' : '\r\n') };
-}
-
-// ── servidor LAN opcional (tools/lan.mjs): sirve el juego y hace de servidor de señalización en casa ──
-const LanServer = {
-  async available() {
-    try {
-      const r = await fetch('/api/lan/ping', { cache: 'no-store' });
-      return r.ok && (await r.json()).ok === true;
-    } catch { return false; }
-  },
-};
-
-class NetSession {
-  constructor() {
-    this.role = null;         // 'host' | 'guest'
-    this.pc = null;
-    this.dc = null;
-    this.open = false;
-    this.handlers = new Map();
-    this.onClose = null;
-    this.rtt = 0;
-  }
-
-  get side() { return this.role === 'host' ? 0 : 1; }
-
-  on(type, fn) { this.handlers.set(type, fn); }
-  off(type) { this.handlers.delete(type); }
-
-  send(msg) {
-    if (!this.open) return false;
-    try { this.dc.send(JSON.stringify(msg)); return true; } catch { return false; }
-  }
-
-  _pc(ice = ICE) {
-    this.pc = new RTCPeerConnection({ iceServers: ice });
-    this.pc.onconnectionstatechange = () => {
-      const st = this.pc && this.pc.connectionState;
-      if (st === 'failed' || st === 'closed' || st === 'disconnected') this._closed();
-    };
-  }
-
-  _wireChannel(dc) {
-    this.dc = dc;
-    dc.onopen = () => {
-      this.open = true;
-      this._ping = setInterval(() => this.send({ t: 'ping', at: performance.now() }), 1000);
-      if (this.onOpen) this.onOpen();
-    };
-    dc.onclose = () => this._closed();
-    dc.onmessage = (e) => {
-      let m; try { m = JSON.parse(e.data); } catch { return; }
-      if (m.t === 'ping') { this.send({ t: 'pong', at: m.at }); return; }
-      if (m.t === 'pong') { this.rtt = performance.now() - m.at; return; }
-      const h = this.handlers.get(m.t) || this.handlers.get('*');
-      if (h) h(m);
-    };
-  }
-
-  async _gathered() {
-    if (this.pc.iceGatheringState === 'complete') return;
-    await new Promise((res) => {
-      const done = () => { if (this.pc.iceGatheringState === 'complete') res(); };
-      this.pc.addEventListener('icegatheringstatechange', done);
-      setTimeout(res, 3000); // con los candidatos que haya
-    });
-  }
-
-  // Anfitrión: crea la invitación
-  async host() {
-    this.role = 'host';
-    this._pc();
-    this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
-    await this.pc.setLocalDescription(await this.pc.createOffer());
-    await this._gathered();
-    return encodeSignal(this.pc.localDescription);
-  }
-
-  // Anfitrión: recibe la respuesta del invitado
-  async acceptAnswer(code) {
-    const desc = await decodeSignal(code);
-    if (desc.type !== 'answer') throw new Error('Eso no es una respuesta: pega el código que te devuelve el invitado');
-    if (!this.pc) throw new Error('La invitación ha caducado: crea la partida otra vez');
-    // la respuesta solo se puede aplicar una vez (pegarla dos veces daba "called in wrong state: stable")
-    if (this.pc.signalingState !== 'have-local-offer') { if (this.open) return; throw new Error('Esta invitación ya se ha usado: crea la partida otra vez'); }
-    await this.pc.setRemoteDescription(desc);
-  }
-
-  // Invitado: con la invitación genera la respuesta
-  async join(code) {
-    this.role = 'guest';
-    const desc = await decodeSignal(code);
-    if (desc.type !== 'offer') throw new Error('Eso no es una invitación: pega el código del anfitrión');
-    this._pc();
-    this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
-    await this.pc.setRemoteDescription(desc);
-    await this.pc.setLocalDescription(await this.pc.createAnswer());
-    await this._gathered();
-    return encodeSignal(this.pc.localDescription);
-  }
-
-  _closed() {
-    if (!this.pc) return;
-    const was = this.open;
-    this.open = false;
-    clearInterval(this._ping);
-    try { this.dc && this.dc.close(); } catch { /* nada */ }
-    try { this.pc.close(); } catch { /* nada */ }
-    this.pc = null; this.dc = null;
-    if (was && this.onClose) this.onClose();
-  }
-
-  close() { this.onClose = null; this._closed(); }
-}
-
-// sesión global (una a la vez)
-const Net = { session: null };
-
-__exports.encodeSignal = encodeSignal;
-__exports.decodeSignal = decodeSignal;
-__exports.NetSession = NetSession;
-__exports.LanServer = LanServer;
-__exports.Net = Net;
-});
 __def("src/scenes/CharacterSelectScene.js", function(__exports, __req){
+const { PadHub, drawPadCodes } = __req("src/net/PadHub.js");
 const { GAME } = __req("src/config/game.config.js");
 const { menuBackground, titleText, text, panel, COLORS, FONT_TITLE, inRect } = __req("src/ui/draw.js");
 const { ROSTER, BOSSES } = __req("src/characters/index.js");
@@ -7540,6 +8183,7 @@ const T_RANDOM = { special: 'random', name: '?' };
 class CharacterSelectScene {
   enter({ mode = 'vscpu' } = {}) {
     this.mode = mode;
+    if (mode === 'versus') PadHub.ensure(this.game.input);
     this.t = 0;
     const s = this.game.session || {};
     this.cursors = [
@@ -7802,6 +8446,7 @@ class CharacterSelectScene {
     const sp = focus.specials[0];
     text(ctx, `★ ${sp.name}  ·  ⚡ ${focus.super ? focus.super.name : ''}`, W / 2, 506, { size: 15, color: COLORS.gold });
     text(ctx, focus.placeholder ? 'Hueco pendiente: mándame nombre, foto y especial' : focus.description.slice(0, 70), W / 2, 526, { size: 11, color: COLORS.dim });
+    if (this.mode === 'versus') drawPadCodes(ctx, W / 2, 104, 12);
   }
 }
 
@@ -11102,491 +11747,6 @@ class HowToScene {
 __exports.SettingsScene = SettingsScene;
 __exports.HowToScene = HowToScene;
 });
-__def("src/net/Relay.js", function(__exports, __req){
-// Plan B del online: cuando las redes no dejan conexión directa (datos móviles, routers estrictos…), los
-// mensajes del combate viajan por un servidor público de mensajería MQTT (gratuito, sin registro), cada
-// jugador publicando en su "tema" y escuchando el del otro. Va por WebSocket seguro, así que atraviesa
-// cualquier red que tenga internet. Cliente MQTT 3.1.1 mínimo escrito a mano (sin librerías).
-
-const BROKERS = [
-  'wss://broker.emqx.io:8084/mqtt',
-  'wss://broker.hivemq.com:8884/mqtt',
-  'wss://test.mosquitto.org:8081/mqtt',
-  'wss://mqtt.eclipseprojects.io:443/mqtt',
-];
-
-const enc = new TextEncoder(), dec = new TextDecoder();
-
-function str(s) { const b = enc.encode(s); return [b.length >> 8, b.length & 255, ...b]; }
-function varint(n) { const out = []; do { let d = n % 128; n = Math.floor(n / 128); if (n > 0) d |= 128; out.push(d); } while (n > 0); return out; }
-function packet(type, body) { const b = body instanceof Uint8Array ? body : Uint8Array.from(body); const h = [type, ...varint(b.length)]; const out = new Uint8Array(h.length + b.length); out.set(h); out.set(b, h.length); return out; }
-
-class MqttLink {
-  constructor(url) { this.url = url; this.ws = null; this.onMessage = null; this.onDrop = null; this.buf = new Uint8Array(0); this.pid = 1; }
-
-  connect(timeout = 5000) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const fail = (e) => { if (done) return; done = true; clearTimeout(t); try { this.ws && this.ws.close(); } catch { /* nada */ } reject(e); };
-      const t = setTimeout(() => fail(new Error('timeout')), timeout);
-      let ws;
-      try { ws = new WebSocket(this.url, ['mqtt']); } catch (e) { fail(e); return; }
-      ws.binaryType = 'arraybuffer';
-      this.ws = ws;
-      ws.onopen = () => {
-        const id = 'pumas-' + Math.random().toString(36).slice(2, 12);
-        ws.send(packet(0x10, [...str('MQTT'), 4, 0x02, 0, 30, ...str(id)]));
-      };
-      ws.onmessage = (e) => {
-        const data = new Uint8Array(e.data);
-        const all = new Uint8Array(this.buf.length + data.length); all.set(this.buf); all.set(data, this.buf.length);
-        this.buf = all;
-        this._parse((type, body) => {
-          if ((type & 0xf0) === 0x20 && !done) { // CONNACK
-            if (body[1] === 0) { done = true; clearTimeout(t); this._ping = setInterval(() => this._send(packet(0xc0, [])), 20000); resolve(this); } else fail(new Error('broker rechaza'));
-          }
-        });
-      };
-      ws.onerror = () => fail(new Error('no conecta'));
-      ws.onclose = () => { clearInterval(this._ping); if (!done) fail(new Error('cerrado')); else if (this.onDrop) this.onDrop(); };
-    });
-  }
-
-  _parse(onPacket) {
-    for (;;) {
-      const b = this.buf;
-      if (b.length < 2) return;
-      let len = 0, mul = 1, i = 1, byte;
-      do { if (i >= b.length) return; byte = b[i++]; len += (byte & 127) * mul; mul *= 128; } while (byte & 128);
-      if (b.length < i + len) return;
-      const type = b[0] & 0xf0, body = b.subarray(i, i + len);
-      this.buf = b.slice(i + len);
-      if (type === 0x30) { // PUBLISH (QoS 0)
-        const tl = (body[0] << 8) | body[1];
-        const topic = dec.decode(body.subarray(2, 2 + tl));
-        const qos = (b[0] >> 1) & 3;
-        const payload = body.subarray(2 + tl + (qos ? 2 : 0));
-        if (this.onMessage) this.onMessage(topic, dec.decode(payload));
-      } else onPacket(b[0], body);
-    }
-  }
-
-  _send(bytes) { try { if (this.ws && this.ws.readyState === 1) { this.ws.send(bytes); return true; } } catch { /* nada */ } return false; }
-
-  subscribe(topic) {
-    const id = this.pid++;
-    this._send(packet(0x82, [id >> 8, id & 255, ...str(topic), 0]));
-  }
-
-  publish(topic, text) {
-    const t = str(topic), p = enc.encode(text);
-    const body = new Uint8Array(t.length + p.length); body.set(t); body.set(p, t.length);
-    return this._send(packet(0x30, body));
-  }
-
-  get buffered() { return this.ws ? this.ws.bufferedAmount : 0; }
-
-  close() { clearInterval(this._ping); this.onMessage = null; this.onDrop = null; try { this._send(packet(0xe0, [])); this.ws && this.ws.close(); } catch { /* nada */ } this.ws = null; }
-}
-
-// Conecta con el primer servidor que responda (o con uno concreto)
-async function connectBroker(urls) {
-  for (const u of urls) {
-    try { return await new MqttLink(u).connect(); } catch { /* el siguiente */ }
-  }
-  return null;
-}
-
-// Conecta a la vez con todos y se queda con el primero que responda (los demás se cierran)
-function connectAnyBroker(urls, timeout = 6000) {
-  return new Promise((resolve) => {
-    let left = urls.length, won = null;
-    if (!left) { resolve(null); return; }
-    for (const u of urls) {
-      new MqttLink(u).connect(timeout).then((link) => {
-        if (won) { link.close(); return; }
-        won = link; resolve(link);
-      }).catch(() => { if (--left === 0 && !won) resolve(null); });
-    }
-  });
-}
-
-__exports.MqttLink = MqttLink;
-__exports.connectBroker = connectBroker;
-__exports.connectAnyBroker = connectAnyBroker;
-__exports.BROKERS = BROKERS;
-});
-__def("src/net/Online.js", function(__exports, __req){
-// Partida online con un código de 4 letras, sin servidor propio.
-//
-// Todo va por servidores públicos y gratuitos de mensajería MQTT (ver Relay.js). Cada partida usa el "tema"
-// streetpumas/v1/c/<código>: el anfitrión escucha en g2h y el invitado en h2g, en TODOS los servidores que
-// respondan (así basta con que los dos lleguen a uno cualquiera).
-//   1) Emparejamiento: el invitado manda su petición ("offer"); el anfitrión contesta ("answer") por el
-//      servidor por el que le llegó, y a partir de ahí los dos usan solo ese.
-//   2) Conexión directa WebRTC (lo más rápido), negociada por ese mismo canal.
-//   3) Si en unos segundos no hay conexión directa (datos móviles, routers estrictos…), el combate sigue
-//      por el servidor de mensajería.
-// Si algo falla, el aviso dice qué paso ha fallado.
-const { NetSession } = __req("src/net/Net.js");
-const { MqttLink, BROKERS } = __req("src/net/Relay.js");
-
-const CLOUD_SIGNAL = { brokers: BROKERS };
-const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-const rand = (n) => Math.random().toString(36).slice(2, 2 + n);
-const codeBase = (code) => `streetpumas/v1/c/${code.toLowerCase()}`;
-const P2P_WAIT = 6000;      // ms esperando la conexión directa antes de seguir por el servidor
-const FAIL_MSG = 'No se ha podido conectar.';
-
-// STUN para descubrir la IP pública de cada uno (conexión directa)
-const ONLINE_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
-
-function newCode() { let c = ''; for (let i = 0; i < 4; i++) c += LETTERS[Math.floor(Math.random() * LETTERS.length)]; return c; }
-
-// Conecta con todos los servidores a la vez; onLink(link) por cada uno que responda.
-// Se resuelve con el número de conectados en cuanto conecta el primero (o 0 si no conecta ninguno).
-function connectAll(urls, onLink, timeout = 7000) {
-  return new Promise((resolve) => {
-    let left = urls.length, ok = 0;
-    if (!left) resolve(0);
-    for (const url of urls) {
-      new MqttLink(url).connect(timeout)
-        .then((link) => { ok++; onLink(link); resolve(ok); })
-        .catch(() => {})
-        .finally(() => { if (--left === 0) resolve(ok); });
-    }
-  });
-}
-
-class OnlineSession extends NetSession {
-  // server: { brokers, ice?, forceRelay? }
-  constructor(server = CLOUD_SIGNAL) {
-    super();
-    this.server = server;
-    this.brokers = server.brokers || BROKERS;
-    this.me = rand(8);       // id de este dispositivo en la partida
-    this.peer = null;        // id del otro
-    this.links = [];         // conexiones abiertas con servidores de mensajería
-    this.link = null;        // la elegida para esta partida
-    this.pending = [];       // candidatos de red que llegan antes de la descripción remota
-    this.outbox = [];
-    this.onError = null;
-    this.onModeInfo = null;
-    this.code = null;
-    this.mode = null;        // 'p2p' | 'relay'
-    this.diag = { servidores: 'sin probar', anfitrion: 'sin probar', directa: 'sin probar', servidor: 'sin probar' };
-  }
-
-  get lossy() { return this.mode === 'relay'; }
-  get stateEvery() { return this.lossy ? 2 : 1; }
-  get transport() { return this.mode === 'p2p' ? 'directa' : this.mode ? 'servidor' : ''; }
-
-  _failMsg(extra = '') {
-    const d = this.diag;
-    return `${FAIL_MSG}${extra ? ' ' + extra : ''} [servidores: ${d.servidores} · anfitrión: ${d.anfitrion} · directa: ${d.directa} · por servidor: ${d.servidor}]`;
-  }
-  _info(t) { if (this.onModeInfo) this.onModeInfo(t); }
-  _err(msg) {
-    if (this._failed || this.open) return;
-    this._failed = true;
-    this._clearTimers();
-    if (this.onError) this.onError(new Error(msg));
-  }
-  _clearTimers() { clearTimeout(this._wd); clearTimeout(this._p2pTimer); clearInterval(this._hello); clearInterval(this._offerLoop); clearInterval(this._ping); }
-
-  _watchdog(ms, msg) { clearTimeout(this._wd); this._wd = setTimeout(() => { if (!this.open) this._err(msg || this._failMsg()); }, ms); }
-
-  // ── canal de mensajería ──
-  get topicIn() { return codeBase(this.code) + (this.role === 'host' ? '/g2h' : '/h2g'); }
-  get topicOut() { return codeBase(this.code) + (this.role === 'host' ? '/h2g' : '/g2h'); }
-
-  _addLink(link) {
-    if (this._closedForGood || (this.open && this.mode === 'p2p') || this.link) { link.close(); return; }
-    this.links.push(link);
-    link.subscribe(this.topicIn);
-    link.onMessage = (topic, text) => this._in(text, link);
-    link.onDrop = () => {
-      this.links = this.links.filter((l) => l !== link);
-      if (this.link === link) { if (this.open && this.mode === 'relay') { this._closed(); return; } this.link = null; }
-      // mientras se espera, se vuelve a conectar (el móvil puede cortar la conexión al cambiar de app)
-      if (!this.open && !this._failed && !this._closedForGood) setTimeout(() => this._reconnect(link.url), 1500);
-    };
-  }
-
-  _reconnect(url) {
-    if (this.open || this._failed || this._closedForGood || this.link || this.links.some((l) => l.url === url)) return;
-    new MqttLink(url).connect(7000).then((l) => this._addLink(l)).catch(() => setTimeout(() => this._reconnect(url), 4000));
-  }
-
-  _pub(obj, link = this.link) { if (link) link.publish(this.topicOut, JSON.stringify(Array.isArray(obj) ? obj : [obj])); }
-  _pubAll(obj) { for (const l of this.links) this._pub(obj, l); }
-
-  // se queda con el servidor por el que ha llegado el otro; los demás se cierran
-  _choose(link) {
-    if (this.link === link) return;
-    this.link = link;
-    for (const l of this.links) if (l !== link) { l.onDrop = null; l.close(); }
-    this.links = [link];
-    if (this.localCands && this.localCands.length) { this._pub(this.localCands); this.localCands = []; }
-  }
-
-  // ── envío / recepción ──
-  send(msg) {
-    if (!this.open) return false;
-    if (this.mode === 'p2p') return super.send(msg);
-    this.outbox.push(msg);
-    if (!this._queued) { this._queued = true; Promise.resolve().then(() => this._flushRelay()); }
-    return true;
-  }
-
-  _flushRelay() {
-    this._queued = false;
-    if (!this.outbox.length || !this.link) return;
-    const out = this.outbox; this.outbox = [];
-    // si el servidor va atascado, se descartan los estados viejos (llega el siguiente) pero nunca los mensajes de menú
-    const list = this.link.buffered > 64 * 1024 ? out.filter((m) => m.t !== 'st' && m.t !== 'ping') : out;
-    if (list.length) this._pub({ t: 'g', l: list });
-  }
-
-  _dispatch(m) {
-    if (m.t === 'ping') { this.send({ t: 'pong', at: m.at }); return; }
-    if (m.t === 'pong') { this.rtt = performance.now() - m.at; return; }
-    const h = this.handlers.get(m.t) || this.handlers.get('*');
-    if (h) h(m);
-  }
-
-  _in(text, link) {
-    let list; try { list = JSON.parse(text); } catch { return; }
-    for (const m of Array.isArray(list) ? list : [list]) {
-      if (m.t === 'g') { if (this.mode === 'relay' && link === this.link) for (const x of m.l) this._dispatch(x); continue; }
-      if (this.role === 'host') this._hostMsg(m, link); else this._guestMsg(m, link);
-    }
-  }
-
-  _opened(mode) {
-    if (this.open) return;
-    this.mode = mode;
-    this.open = true;
-    this._clearTimers();
-    this._ping = setInterval(() => this.send({ t: 'ping', at: performance.now() }), 1000);
-    if (mode === 'relay') {
-      // la conexión directa ya no se usa
-      if (this.pc) { const pc = this.pc; this.pc = null; this.dc = null; try { pc.close(); } catch { /* nada */ } }
-    } else {
-      // directo: los servidores de mensajería ya no hacen falta
-      setTimeout(() => { if (this.mode === 'p2p') { for (const l of this.links) { l.onDrop = null; l.close(); } this.links = []; this.link = null; } }, 1500);
-    }
-    if (this.onOpen) this.onOpen();
-  }
-
-  // ── WebRTC ──
-  _pc() {
-    super._pc(this.server.ice || ONLINE_ICE);
-    this.localCands = [];
-    this.pc.onicecandidate = (e) => {
-      if (!e.candidate) return;
-      const m = { t: 'cand', from: this.me, c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate };
-      if (this.link) this._pub(m); else this.localCands.push(m); // aún no se sabe por qué servidor: se guardan
-    };
-    this.pc.onconnectionstatechange = () => {
-      const st = this.pc && this.pc.connectionState;
-      if (this.open && this.mode === 'p2p' && (st === 'failed' || st === 'closed' || st === 'disconnected')) this._closed();
-      else if (!this.open && st === 'failed' && this.role === 'guest') { this.diag.directa = 'bloqueada'; this._toRelay(); }
-    };
-  }
-
-  _wireChannel(dc) {
-    this.dc = dc;
-    dc.onopen = () => { this.diag.directa = 'OK'; this._opened('p2p'); };
-    dc.onclose = () => { if (this.mode === 'p2p') this._closed(); };
-    dc.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } this._dispatch(m); };
-  }
-
-  async _candidate(c) {
-    if (!this.pc || !c) return;
-    if (!this.pc.remoteDescription) { this.pending.push(c); return; }
-    try { await this.pc.addIceCandidate(c); } catch { /* candidato no válido: se ignora */ }
-  }
-
-  async _flush() { const p = this.pending; this.pending = []; for (const c of p) await this._candidate(c); }
-
-  // ── ANFITRIÓN ──
-  async host() {
-    this.role = 'host';
-    this.code = newCode();
-    this.diag.servidores = 'conectando';
-    const n = await connectAll(this.brokers, (l) => this._addLink(l));
-    if (!n) { this.diag.servidores = 'ninguno responde'; throw new Error('No se puede conectar con los servidores del online. ¿Hay internet? Prueba PROBAR CONEXIÓN.'); }
-    this.diag.servidores = 'OK';
-    return this.code;
-  }
-
-  async _hostMsg(m, link) {
-    if (m.t === 'offer') {
-      if (this.peer && this.peer !== m.from && (this.open || this.pc)) return; // ya hay un invitado
-      if (this._answer && this._answer.to === m.from) { this._pub(this._answer, link); return; } // petición repetida
-      this.peer = m.from;
-      this._choose(link);
-      this._info('Tu amigo está entrando…');
-      const answer = { t: 'answer', to: m.from, from: this.me, sdp: null };
-      if (m.sdp && typeof RTCPeerConnection === 'function') {
-        this._pc();
-        this.pc.ondatachannel = (e) => this._wireChannel(e.channel);
-        try {
-          await this.pc.setRemoteDescription(m.sdp);
-          await this._flush();
-          await this.pc.setLocalDescription(await this.pc.createAnswer());
-          const d = this.pc.localDescription;
-          answer.sdp = d && d.toJSON ? d.toJSON() : { type: d.type, sdp: d.sdp };
-        } catch { answer.sdp = null; }
-      }
-      this._answer = answer;
-      this._pub(answer);
-    } else if (m.from !== this.peer) {
-      // de otro dispositivo: no es para nosotros
-    } else if (m.t === 'cand') this._candidate(m.c);
-    else if (m.t === 'hello') {
-      // el invitado no consigue conexión directa: seguimos por el servidor (también si se perdió la confirmación)
-      if (!this.link) this._choose(link);
-      this._pub({ t: 'ack', from: this.me, to: m.from }, link);
-      this._opened('relay');
-    }
-  }
-
-  // ── INVITADO ──
-  async join(code) {
-    code = String(code || '').trim().toUpperCase();
-    if (!/^[A-Z]{4}$/.test(code)) throw new Error('El código son 4 letras');
-    this.role = 'guest';
-    this.code = code;
-    this.diag.servidores = 'conectando';
-    const n = await connectAll(this.brokers, (l) => this._addLink(l));
-    if (!n) { this.diag.servidores = 'ninguno responde'; throw new Error('No se puede conectar con los servidores del online. ¿Hay internet? Prueba PROBAR CONEXIÓN.'); }
-    this.diag.servidores = 'OK';
-    let sdp = null;
-    if (!this.server.forceRelay && typeof RTCPeerConnection === 'function') {
-      this._pc();
-      this._wireChannel(this.pc.createDataChannel('pumas', { ordered: true }));
-      await this.pc.setLocalDescription(await this.pc.createOffer());
-      const d = this.pc.localDescription;
-      sdp = d.toJSON ? d.toJSON() : { type: d.type, sdp: d.sdp };
-    } else this.diag.directa = 'desactivada';
-    // la petición se repite (en todos los servidores) hasta que el anfitrión conteste
-    const offer = { t: 'offer', from: this.me, sdp };
-    this.diag.anfitrion = 'sin respuesta';
-    this._pubAll(offer);
-    this._offerLoop = setInterval(() => {
-      if (this._answered || this.open || this._failed) { clearInterval(this._offerLoop); return; }
-      this._info('Esperando al anfitrión… tiene que tener el juego abierto y en pantalla.');
-      this._pubAll(offer);
-    }, 2000);
-    this._watchdog(90000, this._failMsg(`El anfitrión no contesta: tiene que tener la partida ${this.code} creada y el juego abierto en pantalla (en la página de GitHub, no en claude.ai).`));
-  }
-
-  async _guestMsg(m, link) {
-    if (m.to !== this.me) return;
-    if (m.t === 'answer') {
-      if (this._answered) return; // solo la primera respuesta (evita "called in wrong state: stable")
-      this._answered = true;
-      clearInterval(this._offerLoop);
-      this.peer = m.from;
-      this.diag.anfitrion = 'OK';
-      this._choose(link);
-      this._info('Conectando…');
-      if (m.sdp && this.pc && this.pc.signalingState === 'have-local-offer') {
-        this.diag.directa = 'probando';
-        try { await this.pc.setRemoteDescription(m.sdp); await this._flush(); } catch { this.diag.directa = 'error'; }
-        this._p2pTimer = setTimeout(() => { if (this.diag.directa === 'probando') this.diag.directa = 'no conecta'; this._toRelay(); }, P2P_WAIT);
-        this._watchdog(P2P_WAIT + 15000);
-      } else this._toRelay();
-    } else if (m.t === 'cand' && m.from === this.peer) {
-      this._candidate(m.c);
-    } else if (m.t === 'ack') {
-      this.diag.servidor = 'OK';
-      this._opened('relay');
-    }
-  }
-
-  // sin conexión directa: se sigue por el servidor de mensajería elegido
-  _toRelay() {
-    if (this.open || this._relayStarted || this._failed) return;
-    this._relayStarted = true;
-    clearTimeout(this._p2pTimer);
-    this._info('Sin conexión directa: conectando por servidor…');
-    this.diag.servidor = 'sin respuesta';
-    const hello = () => this._pub({ t: 'hello', from: this.me, to: this.peer });
-    hello();
-    this._hello = setInterval(hello, 400);
-    this._watchdog(12000);
-  }
-
-  _closed() {
-    this._clearTimers();
-    if (!this.open) return;
-    this.open = false;
-    try { this.dc && this.dc.close(); } catch { /* nada */ }
-    try { this.pc && this.pc.close(); } catch { /* nada */ }
-    for (const l of this.links) { l.onDrop = null; l.close(); }
-    this.links = []; this.link = null; this.pc = null; this.dc = null;
-    if (this.onClose) this.onClose();
-  }
-
-  close() {
-    this._closedForGood = true;
-    this.onClose = null;
-    this._clearTimers();
-    for (const l of this.links) { l.onDrop = null; l.close(); }
-    this.links = []; this.link = null;
-    try { this.dc && this.dc.close(); } catch { /* nada */ }
-    try { this.pc && this.pc.close(); } catch { /* nada */ }
-    this.pc = null; this.dc = null; this.open = false;
-  }
-}
-
-// ── Prueba de conexión: comprueba cada pieza del online desde este dispositivo ──
-async function probeConnection(server = CLOUD_SIGNAL, onStep = () => {}) {
-  const out = [];
-  const step = (name, ok, info) => { out.push({ name, ok, info }); onStep(out.slice()); };
-  // 1) servidores de mensajería (emparejamiento y plan B): conectar y recibir un mensaje propio
-  let anyOk = false;
-  await Promise.all((server.brokers || BROKERS).map(async (url) => {
-    const host = url.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
-    const t0 = performance.now();
-    const link = await new MqttLink(url).connect(6000).catch(() => null);
-    if (!link) { step(`Servidor ${host}`, false, 'no conecta'); return; }
-    const topic = `streetpumas/v1/probe/${rand(8)}`;
-    const got = await new Promise((res) => {
-      const timer = setTimeout(() => res(false), 5000);
-      link.onMessage = (t) => { if (t === topic) { clearTimeout(timer); res(true); } };
-      link.subscribe(topic);
-      setTimeout(() => link.publish(topic, '[]'), 300);
-    });
-    link.close();
-    if (got) anyOk = true;
-    step(`Servidor ${host}`, got, got ? `OK (${Math.round(performance.now() - t0)} ms)` : 'conecta pero no reenvía');
-  }));
-  // 2) conexión directa: ¿se consigue la IP pública por STUN?
-  if (typeof RTCPeerConnection === 'function') {
-    const pc = new RTCPeerConnection({ iceServers: server.ice || ONLINE_ICE });
-    pc.createDataChannel('t');
-    const kinds = new Set();
-    pc.onicecandidate = (e) => { if (e.candidate) kinds.add(e.candidate.type || (/ typ (\w+)/.exec(e.candidate.candidate) || [])[1]); };
-    try { await pc.setLocalDescription(await pc.createOffer()); } catch { /* nada */ }
-    await new Promise((r) => setTimeout(r, 3500));
-    pc.close();
-    const srflx = kinds.has('srflx');
-    step('Conexión directa', srflx, srflx ? 'OK (IP pública encontrada)' : kinds.size ? 'solo red local (irá por servidor)' : 'bloqueada (irá por servidor)');
-  } else step('Conexión directa', false, 'el navegador no la permite');
-  step('Online', anyOk, anyOk ? 'debería funcionar' : 'ningún servidor funciona desde aquí');
-  return out;
-}
-
-__exports.newCode = newCode;
-__exports.OnlineSession = OnlineSession;
-__exports.probeConnection = probeConnection;
-__exports.CLOUD_SIGNAL = CLOUD_SIGNAL;
-__exports.ONLINE_ICE = ONLINE_ICE;
-});
 __def("src/net/RoomSession.js", function(__exports, __req){
 // Partida en red a través del "room" de claude.ai (cuando el juego se abre como artefacto, donde el
 // navegador no deja usar WebRTC). Los dos dispositivos entran en una sala con nombre (el código de 4 letras)
@@ -11824,6 +11984,8 @@ class LanScene {
       g.input.pads.toast = { text: '¡CONEXIÓN PERDIDA!', t: 180 };
       g.goto('title');
     };
+    // si la otra pantalla es un juego local que usa móviles como mandos, este dispositivo pasa a ser un mando
+    net.on('pad', (m) => { this._closePanel(); g.goto('pad', { slot: m.slot || 0 }, { force: true }); });
     // el anfitrión manda: el invitado sigue sus cambios de pantalla
     net.on('go', (m) => {
       if (m.session) g.session = { ...m.session, mode: 'lan' };
@@ -12034,6 +12196,7 @@ class CodePanel {
 __exports.LanScene = LanScene;
 });
 __def("src/main.js", function(__exports, __req){
+const { PadScene } = __req("src/scenes/PadScene.js");
 const { TournamentSetupScene, TournamentScene } = __req("src/scenes/TournamentScenes.js");
 const { Game } = __req("src/engine/Game.js");
 const { Renderer } = __req("src/engine/Renderer.js");
@@ -12089,6 +12252,7 @@ async function boot() {
   game.register('howto', new HowToScene());
   game.register('lan', new LanScene());
   game.register('tsetup', new TournamentSetupScene());
+  game.register('pad', new PadScene());
   game.register('tournament', new TournamentScene());
 
   renderer.overlays.push((ctx) => input.touch.render(ctx));
