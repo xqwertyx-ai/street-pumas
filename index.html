@@ -796,7 +796,17 @@ function varint(n) { const out = []; do { let d = n % 128; n = Math.floor(n / 12
 function packet(type, body) { const b = body instanceof Uint8Array ? body : Uint8Array.from(body); const h = [type, ...varint(b.length)]; const out = new Uint8Array(h.length + b.length); out.set(h); out.set(b, h.length); return out; }
 
 class MqttLink {
-  constructor(url) { this.url = url; this.ws = null; this.onMessage = null; this.onDrop = null; this.buf = new Uint8Array(0); this.pid = 1; }
+  constructor(url) { this.url = url; this.ws = null; this.onMessage = null; this.onDrop = null; this.buf = new Uint8Array(0); this.pid = 1; this.lastRx = performance.now(); }
+
+  // conexión que ya no responde: se cierra y se avisa (como si se hubiera caído)
+  _dead() {
+    clearInterval(this._ping);
+    const cb = this.onDrop;
+    this.onDrop = null; this.onMessage = null;
+    try { this.ws && this.ws.close(); } catch { /* nada */ }
+    this.ws = null;
+    if (cb) cb();
+  }
 
   connect(timeout = 5000) {
     return new Promise((resolve, reject) => {
@@ -812,12 +822,22 @@ class MqttLink {
         ws.send(packet(0x10, [...str('MQTT'), 4, 0x02, 0, 30, ...str(id)]));
       };
       ws.onmessage = (e) => {
+        this.lastRx = performance.now();
         const data = new Uint8Array(e.data);
         const all = new Uint8Array(this.buf.length + data.length); all.set(this.buf); all.set(data, this.buf.length);
         this.buf = all;
         this._parse((type, body) => {
           if ((type & 0xf0) === 0x20 && !done) { // CONNACK
-            if (body[1] === 0) { done = true; clearTimeout(t); this._ping = setInterval(() => this._send(packet(0xc0, [])), 20000); resolve(this); } else fail(new Error('broker rechaza'));
+            if (body[1] === 0) {
+              done = true; clearTimeout(t);
+              // ping cada 15 s; si en 40 s no llega NADA del servidor, la conexión está muerta aunque no se haya
+              // cerrado (wifi de la tele, router…): se da por caída y se vuelve a conectar
+              this._ping = setInterval(() => {
+                if (performance.now() - this.lastRx > 40000) { this._dead(); return; }
+                this._send(packet(0xc0, []));
+              }, 15000);
+              resolve(this);
+            } else fail(new Error('broker rechaza'));
           }
         });
       };
@@ -1048,7 +1068,8 @@ class OnlineSession extends NetSession {
       if (this.pc) { const pc = this.pc; this.pc = null; this.dc = null; try { pc.close(); } catch { /* nada */ } }
     } else {
       // directo: los servidores de mensajería ya no hacen falta
-      setTimeout(() => { if (this.mode === 'p2p') { for (const l of this.links) { l.onDrop = null; l.close(); } this.links = []; this.link = null; } }, 1500);
+      // (los mandos-móvil se quedan escuchando en uno para avisar a quien escriba un código ya usado)
+      if (!this.server.keepSignal) setTimeout(() => { if (this.mode === 'p2p') { for (const l of this.links) { l.onDrop = null; l.close(); } this.links = []; this.link = null; } }, 1500);
     }
     if (this.onOpen) this.onOpen();
   }
@@ -1097,7 +1118,7 @@ class OnlineSession extends NetSession {
 
   async _hostMsg(m, link) {
     if (m.t === 'offer') {
-      if (this.peer && this.peer !== m.from && (this.open || this.pc)) return; // ya hay un invitado
+      if (this.peer && this.peer !== m.from && (this.open || this.pc)) { this._pub({ t: 'busy', to: m.from, from: this.me }, link); return; } // ya hay un invitado
       if (this._answer && this._answer.to === m.from) { this._pub(this._answer, link); return; } // petición repetida
       this.peer = m.from;
       this._choose(link);
@@ -1154,11 +1175,15 @@ class OnlineSession extends NetSession {
       this._info('Esperando al anfitrión… tiene que tener el juego abierto y en pantalla.');
       this._pubAll(offer);
     }, 2000);
-    this._watchdog(90000, this._failMsg(`El anfitrión no contesta: tiene que tener la partida ${this.code} creada y el juego abierto en pantalla (en la página de GitHub, no en claude.ai).`));
+    this._watchdog(60000, this._failMsg(`El anfitrión no contesta. Comprueba que escribes el código que sale AHORA en la pantalla grande (si es para J2, el de J2: el de J1 ya está usado) y que el juego sigue abierto allí.`));
   }
 
   async _guestMsg(m, link) {
     if (m.to !== this.me) return;
+    if (m.t === 'busy' && !this._answered) {
+      this._err(`El código ${this.code} ya está usado por otro móvil. Mira en la pantalla grande el código que queda libre (el de J2) y escribe ese.`);
+      return;
+    }
     if (m.t === 'answer') {
       if (this._answered) return; // solo la primera respuesta (evita "called in wrong state: stable")
       this._answered = true;
@@ -1286,6 +1311,7 @@ const PadHub = {
       if (q.get('broker')) this.server = { brokers: q.getAll('broker') };
     } catch { /* nada */ }
     for (let i = 0; i < 2; i++) this._host(i);
+    this._watch();
   },
 
   // al salir del juego: se cierran las conexiones y no se vuelven a ofrecer códigos
@@ -1294,13 +1320,25 @@ const PadHub = {
     for (const s of this.slots) if (s && s.net) { try { s.net.close(); } catch { /* nada */ } }
   },
 
+  // vigilancia (cada 5 s): un código esperando que se ha quedado sin ningún servidor conectado se renueva
+  _watch() {
+    if (this._watching) return;
+    this._watching = setInterval(() => {
+      if (this.stopped) { clearInterval(this._watching); return; }
+      this.slots.forEach((s, i) => {
+        if (!s || s.connected || !s.code || !s.net) return;
+        if (!s.net.links.length && performance.now() - s.since > 60000) { try { s.net.close(); } catch { /* nada */ } this._host(i); }
+      });
+    }, 5000);
+  },
+
   // cuántos móviles hay conectados ahora mismo como mando
   connectedCount() { return this.slots.filter((s) => s && s.connected).length; },
 
   _host(i) {
     if (this.stopped) return;
     const slot = this.slots[i] = { net: null, code: null, connected: false, status: 'creando código…' };
-    const net = new OnlineSession(this.server);
+    const net = new OnlineSession({ ...this.server, keepSignal: true });
     slot.net = net;
     net.onOpen = () => {
       slot.connected = true; slot.status = 'conectado';
@@ -1324,6 +1362,7 @@ const PadHub = {
       setTimeout(() => this._host(i), 500); // código nuevo para volver a conectar
     };
     net.onError = () => { if (!slot.connected) { try { net.close(); } catch { /* nada */ } setTimeout(() => this._host(i), 3000); } };
+    slot.since = performance.now();
     net.host().then((code) => { slot.code = code; slot.status = 'esperando'; })
       .catch(() => { slot.status = 'sin conexión'; setTimeout(() => { if (this.slots[i] === slot) this._host(i); }, 8000); });
   },
@@ -1332,7 +1371,7 @@ const PadHub = {
   label(i) {
     const s = this.slots[i];
     if (!s) return '';
-    if (s.connected) return `J${i + 1}: móvil conectado`;
+    if (s.connected) return `J${i + 1}: ✓ móvil conectado`;
     return s.code ? `J${i + 1}: ${s.code}` : `J${i + 1}: ${s.status}`;
   },
 };
@@ -4587,6 +4626,9 @@ function cropToCanvas(img, ax, ay) {
   return { canvas: c, ox: x0 - ax, oy: y0 - ay, w: c.width, h: c.height };
 }
 
+// presupuesto de horneados por fotograma (lo repone el bucle del juego en cada pintado)
+const BAKE_BUDGET = { left: 1, perFrame: 1 };
+
 class SpriteBaker {
   // w,h: lienzo de trabajo (px internos); ax, ay: ancla (pies del luchador / centro del objeto)
   constructor({ w = 320, h = 300, ax = 160, ay = 270, max = 320, protect = null, shade = { dark: 0.72, light: 1.18 } } = {}) {
@@ -4678,6 +4720,7 @@ function imageColors(img) {
 
 __exports.pixelize = pixelize;
 __exports.SpriteBaker = SpriteBaker;
+__exports.BAKE_BUDGET = BAKE_BUDGET;
 __exports.blitWobble = blitWobble;
 __exports.blitSprite = blitSprite;
 __exports.imageColors = imageColors;
@@ -5246,6 +5289,7 @@ __exports.TournamentScene = TournamentScene;
 __def("src/engine/Game.js", function(__exports, __req){
 const { text } = __req("src/ui/draw.js");
 const { GAME } = __req("src/config/game.config.js");
+const { BAKE_BUDGET } = __req("src/animation/PixelBaker.js");
 
 // Bucle principal con paso fijo (60 Hz lógicos) y render desacoplado.
 // La lógica del combate es determinista por frames; el render interpola efectos visuales.
@@ -5360,6 +5404,7 @@ class Game {
   }
 
   render() {
+    BAKE_BUDGET.left = BAKE_BUDGET.perFrame;
     const ctx = this.renderer.begin();
     if (this.scene) this.scene.render(ctx);
     if (this.transition) {
@@ -5418,9 +5463,15 @@ class Renderer {
     const cssW = Math.floor(GAME.width * scale), cssH = Math.floor(GAME.height * scale);
     this.canvas.style.width = cssW + 'px';
     this.canvas.style.height = cssH + 'px';
-    this.canvas.width = Math.floor(cssW * dpr);
-    this.canvas.height = Math.floor(cssH * dpr);
-    this.pixelScale = (cssW * dpr) / GAME.width;
+    let bw = Math.floor(cssW * dpr), bh = Math.floor(cssH * dpr);
+    // Teles y proyectores (sin pantalla táctil): en 4K el lienzo llegaba a 3840x2160 y repintarlo 60 veces por
+    // segundo ahogaba a la tele. El juego se dibuja a 640x360, así que basta un lienzo de 1280x720 (2x exacto)
+    // y que el navegador lo amplíe con píxeles nítidos (image-rendering: pixelated): mismo aspecto, mucho más rápido.
+    const touch = (typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window);
+    if (!touch && bw > this.lowW * 2) { bw = this.lowW * 2; bh = this.lowH * 2; }
+    this.canvas.width = bw;
+    this.canvas.height = bh;
+    this.pixelScale = bw / GAME.width;
     this.cssScale = scale;
     this.portrait = vh > vw;
   }
@@ -7916,7 +7967,7 @@ const { POSES, ATTACK_ANIMS, lerpPose } = __req("src/animation/poses.js");
 const { drawPuppet, flatPalette, drawVehicle, drawCompanion } = __req("src/animation/PuppetRenderer.js");
 const { SpriteAnimator } = __req("src/animation/SpriteAnimator.js");
 const { easeOutCubic, hexToRgba } = __req("src/utils/math.js");
-const { SpriteBaker, blitSprite, blitWobble, imageColors } = __req("src/animation/PixelBaker.js");
+const { BAKE_BUDGET, SpriteBaker, blitSprite, blitWobble, imageColors } = __req("src/animation/PixelBaker.js");
 const { drawPixelText } = __req("src/ui/pixelFont.js");
 const { GAME } = __req("src/config/game.config.js");
 
@@ -8179,6 +8230,10 @@ class FighterView {
     const key = [p.t, p.head, p.aF[0], p.aF[1], p.aB[0], p.aB[1], p.lF[0], p.lF[1], p.lB[0], p.lB[1], p.hipY ?? '', p.rot || 0, p.bob || 0, p.dx || 0]
       .map((v) => (typeof v === 'number' ? r1(v) : v)).join(',')
       + `|${p.air ? 1 : 0}${p.lie ? 1 : 0}|${r.expr}|${r.prop || ''}|${r.skate ? 1 : 0}|${r.outfit ? JSON.stringify(r.outfit) : ''}|${r.vehicle || ''}${wheel}${r.chair ? 'c' : ''}|${faceImg ? 'f' : ''}`;
+    // pose nueva y ya se ha horneado otra en este fotograma: se repite la anterior (un fotograma no se nota;
+    // hornear dos de golpe en una tele lenta sí, es un tirón)
+    if (this._lastBake && !this.baker.cache.has(key) && BAKE_BUDGET.left <= 0) return this._lastBake;
+    if (!this.baker.cache.has(key)) BAKE_BUDGET.left--;
     const spr = this.baker.get(key, (ctx) => {
       const S = def.stats.height / GAME.pixel;
       ctx.scale(S, S);
@@ -8204,7 +8259,7 @@ class FighterView {
       drawPuppet(ctx, p, look, { pal, faceImg, expr: r.expr, prop: r.prop, skateboard: r.skate, facing: 1 });
       if (r.vehicle) { ctx.restore(); drawVehicle(ctx, r.vehicle, wheel * 3); }
     });
-    return { key, spr };
+    return (this._lastBake = { key, spr });
   }
 
   // Mascota que acompaña al luchador (p. ej. el chihuahua de Jesús)
@@ -8318,7 +8373,7 @@ class TitleScene {
       if (Math.floor(this.t / 30) % 2 === 0) text(ctx, 'PULSA CUALQUIER BOTÓN · TOCA LA PANTALLA', W / 2, 360, { size: 20, color: COLORS.gold, lw: 5 });
       text(ctx, '16 Pumas · 4 jefes · lugares míticos', W / 2, 400, { size: 15, color: COLORS.dim, lw: 4 });
     } else this.menu.draw(ctx);
-    text(ctx, 'v0.21', W - 12, GAME.height - 14, { size: 11, align: 'right', color: 'rgba(255,255,255,0.35)' });
+    text(ctx, 'v0.22', W - 12, GAME.height - 14, { size: 11, align: 'right', color: 'rgba(255,255,255,0.35)' });
   }
 }
 
@@ -10116,7 +10171,7 @@ const { drawBall, drawDumbbell, drawExtinguisher, drawVinyl, drawChihuahua } = _
 const { drawDog, drawBike, drawPortrait2, drawProtestSign, drawStamp, drawDecree, drawStroller, drawStory, drawLike, drawWhiteboard } = __req("src/animation/props.js");
 
 const OUT = '#1a0f1f';
-const { SpriteBaker, blitSprite } = __req("src/animation/PixelBaker.js");
+const { BAKE_BUDGET, SpriteBaker, blitSprite } = __req("src/animation/PixelBaker.js");
 const { drawPixelText } = __req("src/ui/pixelFont.js");
 const { GAME } = __req("src/config/game.config.js");
 
