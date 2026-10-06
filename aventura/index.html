@@ -1,0 +1,726 @@
+<meta charset="utf-8">
+<title>Tarde de Pumas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&family=VT323&display=swap">
+<style>
+/* Layout: una sola pantalla de juego 2:1 centrada; HUD, subtítulos y teléfono como capas encima del lienzo */
+:root{
+  --ink:#110c18; --panel:#1c1428; --panel2:#2a1f3a; --line:#4a3a5e;
+  --amber:#ffcf6b; --teal:#4cc3b8; --red:#e0473c; --text:#f4ead6; --muted:#a99cb8;
+  --lcd:#b9c98a; --lcdInk:#24301a;
+  --display:"Pixelify Sans", "Courier New", monospace;
+  --body:"VT323", "Courier New", monospace;
+  color-scheme:dark;
+}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{background:var(--ink);color:var(--text);font-family:var(--body);padding-inline:16px;padding-block:12px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:10px;overflow-x:hidden}
+.stage{position:relative;width:min(100%, calc((100dvh - 96px) * 2));aspect-ratio:2/1;max-width:100%;container-type:inline-size;background:#000;border:2px solid var(--line);border-radius:6px;overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+#cv{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;cursor:crosshair;transform-origin:80.6% 50.6%;transition:transform 1.6s cubic-bezier(.6,0,.4,1), filter 2s}
+.foot{display:flex;flex-wrap:wrap;gap:6px 18px;justify-content:center;color:var(--muted);font-size:18px;max-width:100%}
+.foot b{color:var(--amber);font-weight:400}
+.foot button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 10px;cursor:pointer}
+.foot button:focus-visible,.stage button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+/* HUD */
+.hud{position:absolute;left:1.2cqw;right:1.2cqw;top:1.2cqw;display:flex;justify-content:space-between;gap:1cqw;pointer-events:none;align-items:flex-start}
+.inv{display:flex;flex-wrap:wrap;gap:.6cqw;pointer-events:auto;max-width:62%}
+.inv button{font-family:var(--display);font-size:1.35cqw;color:var(--text);background:rgba(17,12,24,.82);border:2px solid var(--line);border-radius:.5cqw;padding:.35cqw .8cqw;cursor:pointer;display:flex;align-items:center;gap:.5cqw}
+.inv button .ic{width:1.1cqw;height:1.1cqw;border-radius:2px;background:var(--amber);display:inline-block}
+.inv button.sel{border-color:var(--amber);background:#3a2a12;box-shadow:0 0 0 2px rgba(255,207,107,.25)}
+.obj{font-family:var(--display);font-size:1.35cqw;background:rgba(17,12,24,.82);border:2px solid var(--line);border-radius:.5cqw;padding:.45cqw .9cqw;max-width:36%;text-align:right}
+.obj small{display:block;color:var(--muted);font-size:1.05cqw;letter-spacing:.08em;text-transform:uppercase}
+.obj ul{list-style:none;margin:.3cqw 0 0;padding:0;font-family:var(--body);font-size:1.6cqw;line-height:1.05}
+.obj li.ok{color:var(--teal)} .obj li{color:var(--muted)}
+.hintbtn{position:absolute;left:50%;top:1.2cqw;transform:translateX(-50%);font-family:var(--display);font-size:1.3cqw;color:var(--ink);background:var(--amber);border:none;border-radius:.5cqw;padding:.4cqw 1cqw;cursor:pointer}
+#label{position:absolute;pointer-events:none;font-family:var(--display);font-size:1.4cqw;color:var(--amber);text-shadow:0 2px 0 #000,0 0 6px #000;transform:translate(-50%,-160%);white-space:nowrap}
+
+/* Diálogo */
+#dlg{position:absolute;left:4%;right:4%;bottom:2.2cqw;display:flex;gap:1.2cqw;align-items:flex-end;background:rgba(17,12,24,.9);border:2px solid var(--line);border-radius:.8cqw;padding:1cqw 1.4cqw;z-index:50;cursor:pointer}
+#dlg .pf{flex:none;width:6.2cqw;height:6.2cqw;border-radius:.5cqw;overflow:hidden;background:var(--panel2);display:grid;place-items:center;border:2px solid var(--line)}
+#dlg .pf img{width:100%;height:100%;object-fit:cover;object-position:50% 20%;image-rendering:pixelated}
+#dlg .pf .tag{font-family:var(--display);font-size:2.3cqw;font-weight:700;color:var(--ink)}
+#dlg .tx{flex:1;min-width:0}
+#dlg .nm{font-family:var(--display);font-size:1.45cqw;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+#dlg .ln{font-size:2.6cqw;line-height:1.05;min-height:2.7cqw}
+#dlg .nx{position:absolute;right:1cqw;bottom:.6cqw;font-family:var(--display);font-size:1.1cqw;color:var(--muted);animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* Teléfono */
+#phone{position:absolute;left:4cqw;top:5cqw;width:21cqw;height:31cqw;z-index:20;background:#2b2f36;border-radius:3cqw 3cqw 2cqw 2cqw;border:3px solid #15171b;box-shadow:0 1.2cqw 0 #0a0b0d, inset 0 0 0 .4cqw #3a3f48;padding:2cqw 1.6cqw 1.4cqw;display:flex;flex-direction:column;gap:1cqw;animation:up .35s ease-out}
+@keyframes up{from{transform:translateY(40%);opacity:0}}
+.ph-spk{height:.5cqw;width:5cqw;margin:0 auto;background:#15171b;border-radius:1cqw}
+.ph-screen{flex:1;min-height:0;background:var(--lcd);border-radius:.6cqw;box-shadow:inset 0 0 0 .3cqw #8a9a62;color:var(--lcdInk);padding:.8cqw;display:flex;flex-direction:column;font-family:var(--body)}
+.ph-head{display:flex;justify-content:space-between;font-family:var(--display);font-size:1.3cqw;border-bottom:2px solid var(--lcdInk);padding-bottom:.3cqw;margin-bottom:.3cqw}
+#phList{list-style:none;margin:0;padding:0;overflow-y:auto;flex:1;min-height:0;scrollbar-width:thin;scrollbar-color:var(--lcdInk) transparent}
+#phList button{all:unset;box-sizing:border-box;display:flex;justify-content:space-between;width:100%;font-size:2cqw;line-height:1.15;padding:0 .5cqw;cursor:pointer;border-radius:.3cqw}
+#phList button:hover,#phList button:focus-visible{background:var(--lcdInk);color:var(--lcd)}
+#phList .st{font-size:1.6cqw;opacity:.85}
+.ph-call{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.6cqw;font-size:2.1cqw}
+.ph-call b{font-family:var(--display);font-size:2.1cqw}
+.ph-sms{margin-top:auto;background:var(--lcdInk);color:var(--lcd);border-radius:.5cqw;padding:.5cqw .7cqw;font-size:1.7cqw;line-height:1.05;animation:up .3s}
+.ph-keys{display:grid;grid-template-columns:repeat(3,1fr);gap:.4cqw}
+.ph-keys span{height:1.2cqw;background:#3e434c;border-radius:1cqw}
+#phClose{font-family:var(--display);font-size:1.2cqw;background:var(--red);color:#fff;border:none;border-radius:1cqw;padding:.4cqw;cursor:pointer}
+
+/* Pantallas */
+.screen{position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.4cqw;text-align:center;background:rgba(10,7,14,.92)}
+.screen h1{font-family:var(--display);font-size:6.4cqw;line-height:.95;margin:0;color:var(--amber);text-shadow:.35cqw .35cqw 0 var(--red);text-wrap:balance}
+.screen p{font-size:2cqw;margin:0;color:var(--muted);max-width:60cqw}
+.btn{font-family:var(--display);font-size:1.8cqw;color:var(--ink);background:var(--amber);border:none;border-radius:.6cqw;padding:.7cqw 2.4cqw;cursor:pointer;box-shadow:0 .35cqw 0 #a77a1e}
+.btn.alt{background:var(--panel2);color:var(--text);box-shadow:0 .35cqw 0 #120c1a;border:2px solid var(--line)}
+.chap{display:flex;flex-wrap:wrap;gap:.6cqw;justify-content:center;max-width:80cqw}
+.chap button{font-family:var(--body);font-size:1.7cqw;color:var(--text);background:transparent;border:1px solid var(--line);border-radius:.4cqw;padding:.1cqw .9cqw;cursor:pointer}
+.chap button:hover{border-color:var(--amber);color:var(--amber)}
+#card{background:#000}
+#card h2{font-family:var(--display);font-style:italic;font-size:6cqw;color:#ffe14d;-webkit-text-stroke:.25cqw #6b3a12;text-shadow:.5cqw .5cqw 0 #6b3a12;margin:0;letter-spacing:.04em;animation:pop .5s cubic-bezier(.2,1.6,.4,1)}
+@keyframes pop{from{transform:scale(.3) rotate(-6deg)}}
+#close{background:rgba(0,0,0,.7);z-index:35}
+#close .frame{position:relative;width:34cqw;height:34cqw;border:.6cqw solid var(--text);background:var(--teal);overflow:hidden;animation:zoom .45s cubic-bezier(.2,1.4,.4,1)}
+#close img{width:100%;height:100%;object-fit:cover;object-position:50% 25%;image-rendering:pixelated}
+#close .cap{font-family:var(--display);font-size:3cqw;color:var(--amber);text-shadow:.25cqw .25cqw 0 #000}
+@keyframes zoom{from{transform:scale(.2)}}
+#owlbox .items{display:flex;gap:1.4cqw;flex-wrap:wrap;justify-content:center}
+#owlbox .items button{width:15cqw;font-family:var(--display);font-size:1.4cqw;color:var(--text);background:var(--panel);border:2px solid var(--line);border-radius:.6cqw;padding:1cqw;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:.6cqw}
+#owlbox .items button:hover{border-color:var(--amber)}
+#owlbox .items button.seen{opacity:.55}
+#owlbox canvas{width:8cqw;height:8cqw;image-rendering:pixelated}
+#select .cards{display:flex;gap:3cqw}
+#select .cards button{width:20cqw;background:var(--panel);border:3px solid var(--line);border-radius:.8cqw;padding:0 0 1cqw;cursor:pointer;color:var(--text);font-family:var(--display);font-size:2cqw;overflow:hidden;display:flex;flex-direction:column;gap:.8cqw}
+#select .cards button:hover{border-color:var(--amber);transform:translateY(-.4cqw)}
+#select .cards img{width:100%;height:22cqw;object-fit:cover;object-position:50% 5%;background:var(--teal);image-rendering:pixelated}
+#select .cards small{font-family:var(--body);font-size:1.6cqw;color:var(--muted)}
+#touch{position:absolute;inset:auto 0 0 0;display:none;justify-content:space-between;padding:1.4cqw;z-index:25;pointer-events:none}
+#touch .grp{display:flex;gap:1cqw;pointer-events:auto}
+#touch button{width:7cqw;height:7cqw;border-radius:50%;border:2px solid rgba(255,255,255,.35);background:rgba(17,12,24,.5);color:var(--text);font-family:var(--display);font-size:2cqw}
+.fighting #touch{display:flex}
+@media (hover:hover) and (pointer:fine){ .fighting #touch{display:none} }
+@media (prefers-reduced-motion:reduce){ #cv{transition:none} *{animation-duration:.01s!important} }
+</style>
+
+<div class="stage" id="stage">
+  <canvas id="cv" width="1600" height="800" aria-label="Habitación de Alex"></canvas>
+  <div class="hud" id="hud" hidden>
+    <div class="inv" id="inv"></div>
+    <div class="obj" id="obj"></div>
+  </div>
+  <div id="label"></div>
+  <button class="hintbtn" id="hintBtn" hidden>Pista</button>
+
+  <div id="dlg" hidden>
+    <div class="pf" id="dlgPf"></div>
+    <div class="tx"><div class="nm" id="dlgNm"></div><div class="ln" id="dlgLn"></div></div>
+    <span class="nx">clic ▸</span>
+  </div>
+
+  <div id="phone" hidden>
+    <div class="ph-spk"></div>
+    <div class="ph-screen">
+      <div class="ph-head"><span id="phTitle">Agenda</span><span>▮▮▮▯</span></div>
+      <ul id="phList"></ul>
+      <div class="ph-call" id="phCall" hidden></div>
+      <div class="ph-sms" id="phSms" hidden></div>
+    </div>
+    <div class="ph-keys"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    <button id="phClose">Guardar móvil</button>
+  </div>
+
+  <div class="screen" id="owlbox" hidden>
+    <p>Dentro del búho hucha hay…</p>
+    <div class="items" id="owlItems"></div>
+  </div>
+
+  <div class="screen" id="close" hidden><div class="frame"><img id="closeImg" alt=""></div><div class="cap" id="closeCap"></div></div>
+  <div class="screen" id="card" hidden><h2 id="cardTx"></h2></div>
+
+  <div class="screen" id="select" hidden>
+    <h1 style="font-size:4.4cqw">ELIGE LUCHADOR</h1>
+    <div class="cards">
+      <button data-p="alex"><img src="assets/alex_big.png" alt="Alex"><span>ALEX</span><small>Especial: Rugido de puma</small></button>
+      <button data-p="sergio"><img src="assets/sergio_big.png" alt="Sergio"><span>SERGIO</span><small>Especial: Llamada perdida</small></button>
+    </div>
+  </div>
+
+  <div class="screen" id="result" hidden>
+    <h1 id="resTitle"></h1>
+    <p id="resQuip"></p>
+    <div style="display:flex;gap:1.2cqw;flex-wrap:wrap;justify-content:center">
+      <button class="btn" id="again">Revancha</button>
+      <button class="btn alt" id="pick">Cambiar luchador</button>
+      <button class="btn alt" id="credits">Créditos</button>
+    </div>
+  </div>
+
+  <div class="screen" id="start">
+    <p style="letter-spacing:.2em;text-transform:uppercase;font-size:1.5cqw">Una aventura gráfica muy corta</p>
+    <h1>TARDE DE<br>PUMAS</h1>
+    <p>Haz clic en el suelo para caminar y en los objetos para usarlos. Para usar un objeto del inventario, selecciónalo y haz clic en algo.</p>
+    <button class="btn" id="play">Jugar</button>
+    <div class="chap" id="chap">
+      <span style="font-size:1.6cqw;color:var(--muted)">Saltar a:</span>
+      <button data-c="2">Llamadas</button><button data-c="3">Llega Sergio</button><button data-c="4">Inspiración</button><button data-c="5">Construir el PC</button><button data-c="6">Street Pumas</button>
+    </div>
+  </div>
+
+  <div id="touch">
+    <div class="grp"><button data-k="left">◀</button><button data-k="up">▲</button><button data-k="down">▼</button><button data-k="right">▶</button></div>
+    <div class="grp"><button data-k="p">P</button><button data-k="k">K</button><button data-k="s">★</button></div>
+  </div>
+</div>
+<div class="foot" id="foot">
+  <span id="footTx">Versión con subtítulos · las voces llegarán más adelante</span>
+  <button id="autoBtn" aria-pressed="true">Auto: sí</button>
+</div>
+
+<script>
+'use strict';
+const $=s=>document.querySelector(s);
+const cv=$('#cv'), ctx=cv.getContext('2d');
+const W=1600,H=800;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+
+/* ---------- Assets ---------- */
+const META={
+ alex:{"cw":108,"ch":205,"anims":{"idle_down":{"row":0,"n":3},"idle_left":{"row":1,"n":3},"idle_right":{"row":2,"n":3},"idle_up":{"row":3,"n":4},"walk_down":{"row":4,"n":3},"walk_left":{"row":5,"n":3},"walk_right":{"row":6,"n":3},"walk_up":{"row":7,"n":4},"run_right":{"row":8,"n":3},"run_left":{"row":9,"n":3},"interact":{"row":10,"n":3},"pickup":{"row":11,"n":3},"phone":{"row":12,"n":3}}},
+ sergio:{"cw":115,"ch":200,"anims":{"idle_down":{"row":0,"n":3},"idle_left":{"row":1,"n":3},"idle_right":{"row":2,"n":3},"idle_up":{"row":3,"n":4},"walk_down":{"row":4,"n":3},"walk_left":{"row":5,"n":3},"walk_right":{"row":6,"n":3},"walk_up":{"row":7,"n":4},"run_right":{"row":8,"n":3},"run_left":{"row":9,"n":3},"interact":{"row":10,"n":3},"pickup":{"row":11,"n":3},"phone":{"row":12,"n":3}}}
+};
+const IMG={};
+function loadImg(k,src){return new Promise(r=>{const i=new Image();i.onload=()=>{IMG[k]=i;r()};i.onerror=()=>r();i.src=src})}
+const MOOD={neutral:0,smile:1,laugh:2,confused:3};
+const faceSrc=(who,m)=>`assets/${who}_face${MOOD[m||'neutral']??0}.png`;
+
+/* ---------- Voces (para ElevenLabs más adelante) ----------
+   Pon VOICE_BASE = 'voces' y sube archivos voces/<id>.mp3. El id de cada frase sale en la consola. */
+const VOICE_BASE=null;
+const GUION=[]; window.GUION=GUION;
+function lineId(who,text){let h=0;for(const c of who+text)h=(h*31+c.charCodeAt(0))|0;return who+'_'+(h>>>0).toString(36)}
+
+/* ---------- Sonido sintetizado ---------- */
+let AC=null;
+function ac(){if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}return AC}
+function tone(f,d,o={}){const a=ac();if(!a)return;const t=a.currentTime+(o.delay||0),os=a.createOscillator(),g=a.createGain();os.type=o.type||'square';os.frequency.setValueAtTime(f,t);if(o.slide)os.frequency.exponentialRampToValueAtTime(Math.max(30,f+o.slide),t+d);g.gain.setValueAtTime(o.vol??.07,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);os.connect(g).connect(a.destination);os.start(t);os.stop(t+d+.05)}
+function noise(d,o={}){const a=ac();if(!a)return;const t=a.currentTime+(o.delay||0),b=a.createBuffer(1,Math.max(1,a.sampleRate*d|0),a.sampleRate),x=b.getChannelData(0);for(let i=0;i<x.length;i++)x[i]=Math.random()*2-1;const s=a.createBufferSource();s.buffer=b;const f=a.createBiquadFilter();f.type=o.hp?'highpass':'lowpass';f.frequency.value=o.freq||1500;const g=a.createGain();g.gain.setValueAtTime(o.vol??.15,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);s.connect(f).connect(g).connect(a.destination);s.start(t)}
+const SFX={
+ ring(){tone(440,.8,{type:'sine',vol:.05});tone(480,.8,{type:'sine',vol:.05})},
+ hang(){noise(.07,{vol:.25,freq:3500});tone(300,.08,{vol:.05})},
+ dial(){for(let i=0;i<6;i++)tone(700+Math.random()*700,.06,{type:'sine',vol:.05,delay:i*.08})},
+ sms(){tone(1320,.08,{vol:.05});tone(1760,.12,{vol:.05,delay:.1})},
+ bell(){tone(880,.8,{type:'sine',vol:.14});tone(660,1.1,{type:'sine',vol:.14,delay:.5})},
+ click(){tone(180,.05,{vol:.08})},
+ tvoff(){tone(1200,.25,{type:'sine',vol:.05,slide:-1100})},
+ power(){[392,523,659,784].forEach((f,i)=>tone(f,.25,{type:'triangle',vol:.08,delay:i*.12}))},
+ fizz(){noise(1.6,{vol:.12,freq:5000,hp:true});tone(120,.6,{type:'sawtooth',vol:.06,slide:-80,delay:.3})},
+ crash(){noise(.5,{vol:.35,freq:2500});[1800,2400,1500].forEach((f,i)=>tone(f,.15,{type:'triangle',vol:.05,delay:.05+i*.07}))},
+ pick(){tone(660,.08,{vol:.06});tone(990,.12,{vol:.06,delay:.08})},
+ screw(){for(let i=0;i<5;i++)noise(.06,{vol:.12,freq:4000,delay:i*.13})},
+ bulb(){tone(1046,.15,{type:'sine',vol:.08});tone(1568,.3,{type:'sine',vol:.08,delay:.12})},
+ jingle(){[523,659,784,1046,784,1046].forEach((f,i)=>tone(f,.16,{type:'square',vol:.05,delay:i*.11}))},
+ woosh(){noise(.12,{vol:.12,freq:900})},
+ hit(){noise(.12,{vol:.3,freq:1800});tone(110,.12,{vol:.12,slide:-50})},
+ block(){tone(900,.06,{vol:.06});noise(.05,{vol:.1,freq:6000,hp:true})},
+ jump(){tone(300,.15,{type:'square',vol:.04,slide:300})},
+ ko(){tone(400,.9,{type:'sawtooth',vol:.08,slide:-330})},
+ fight(){tone(196,.2,{vol:.08});tone(262,.35,{vol:.08,delay:.18})},
+ roar(){noise(.5,{vol:.2,freq:600});tone(90,.5,{type:'sawtooth',vol:.08,slide:60})},
+ blip(f){tone(f,.035,{type:'square',vol:.018})}
+};
+
+/* ---------- Personajes que hablan ---------- */
+const SPK={
+ alex:{name:'Alex',color:'#ffcf6b',face:'alex',pitch:210},
+ sergio:{name:'Sergio',color:'#7fd6ff',face:'sergio',pitch:170},
+ tv:{name:'Narrador',color:'#c7c0b0',tag:'TV',bg:'#c7c0b0',pitch:120},
+ sys:{name:'Operadora',color:'#b9c98a',tag:'☎',bg:'#b9c98a',pitch:300},
+};
+const CONTACTS=[
+ ['aaron','Aaron','#f29f6b'],['agui','Agui','#c99bff'],['aida','Aida','#ff8fb1'],['aitor','Aitor','#8fd18b'],
+ ['andrea','Andrea','#ffd36b'],['guevara','Guevara','#ff6b6b'],['guillem','Guillem','#6bd3ff'],['idoia','Idoia','#f7b267'],
+ ['josep','Josep','#9be0c9'],['ruiz','Ruiz','#d8c27a'],['sara','Sara','#ffa3d1'],['sergio','Sergio','#7fd6ff'],['skater','Skater','#b8e05c']
+].map(([id,name,color])=>({id,name,color,status:''}));
+CONTACTS.forEach(c=>{if(!SPK[c.id])SPK[c.id]={name:c.name,color:c.color,tag:c.name[0],bg:c.color,pitch:150+Math.random()*120,phone:true}});
+
+/* ---------- Estado ---------- */
+const S={mode:'room',phase:'off',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,pcBuilt:false,haze:0,bulb:0,zoomTV:false,
+  inv:[],sel:null,looks:{},misses:0,hintIdx:0,lastAct:performance.now(),auto:true};
+const ITEMS={movil:'Móvil',destornillador:'Destornillador',placa:'Placa base',ram:'Memoria RAM',procesador:'Procesador',cd:'CD "Tekken 3"'};
+const ITEMCOL={movil:'#b9c98a',destornillador:'#e0473c',placa:'#4cc3b8',ram:'#7fd6ff',procesador:'#c7c0b0',cd:'#ffcf6b'};
+const has=k=>S.inv.includes(k);
+function addItem(k){if(!has(k)){S.inv.push(k);SFX.pick();renderInv()}}
+function dropItem(k){S.inv=S.inv.filter(i=>i!==k);if(S.sel===k)S.sel=null;renderInv()}
+function renderInv(){const el=$('#inv');el.innerHTML='';S.inv.forEach(k=>{const b=document.createElement('button');b.innerHTML=`<span class="ic" style="background:${ITEMCOL[k]}"></span>${ITEMS[k]}`;if(S.sel===k)b.className='sel';b.onclick=e=>{e.stopPropagation();if(S.busy&&k!=='movil')return;if(k==='movil'&&S.phase==='calling'){openPhone();return}S.sel=S.sel===k?null:k;renderInv()};el.appendChild(b)})}
+const OBJ={find_phone:'Encuentra el móvil',calling:'Llama a alguien que quiera quedar',what_to_do:'Decidid qué hacer',inspiration:'Buscad inspiración',build:'Montad un ordenador'};
+function renderObj(){const el=$('#obj');const t=OBJ[S.phase];if(!t){el.hidden=true;return}el.hidden=false;let h=`<small>Objetivo</small>${t}`;
+ if(S.phase==='build'){const L=[['destornillador','Destornillador',has('destornillador')||S.usedScrew],['placa','Placa base',has('placa')||S.pcBuilt],['ram','Memoria RAM',has('ram')||S.pcBuilt],['procesador','Procesador',has('procesador')||S.pcBuilt],['caja','Caja (la neverita)',S.gotBox||S.pcBuilt],['pc','Montar el PC',S.pcBuilt],['cd','Un juego',has('cd')]];h+='<ul>'+L.map(([k,n,ok])=>`<li class="${ok?'ok':''}">${ok?'■':'□'} ${n}</li>`).join('')+'</ul>'}
+ el.innerHTML=h}
+function setPhase(p){S.phase=p;S.misses=0;S.hintIdx=0;S.lastAct=performance.now();renderObj();$('#hintBtn').hidden=!(HINTS[p]||p==='build')}
+
+/* ---------- Actores ---------- */
+const scaleAt=y=>1.82+(y-600)*.0042;
+class Actor{
+ constructor(key,x,y,dir){Object.assign(this,{key,x,y,dir,tx:null,ty:null,ft:0,visible:true,anim:null,speed:330,_res:null})}
+ walkTo(x,y){if(this._res)this._res(false);return new Promise(r=>{this.tx=x;this.ty=y;this._res=r})}
+ update(dt){this.ft+=dt;if(this.tx==null)return;const dx=this.tx-this.x,dy=this.ty-this.y,d=Math.hypot(dx,dy);
+  if(d<4){this.x=this.tx;this.y=this.ty;this.tx=null;const r=this._res;this._res=null;r&&r(true);return}
+  const s=Math.min(d,this.speed*dt*scaleAt(this.y)/1.9);this.x+=dx/d*s;this.y+=dy/d*s;
+  this.dir=Math.abs(dx)>Math.abs(dy)*.9?(dx>0?'right':'left'):(dy>0?'down':'up')}
+ draw(){if(!this.visible||!IMG[this.key])return;const m=META[this.key];let name,fi;
+  if(this.anim){name=this.anim;const a=m.anims[name];fi=Math.min(a.n-1,Math.floor(this.ft*6))}
+  else if(this.tx!=null){name='walk_'+this.dir;const a=m.anims[name];fi=Math.floor(this.ft*8)%a.n}
+  else{name='idle_'+this.dir;const a=m.anims[name];fi=Math.floor(this.ft*1.6)%a.n}
+  const a=m.anims[name],s=scaleAt(this.y),w=m.cw*s,h=m.ch*s;
+  ctx.drawImage(IMG[this.key],fi*m.cw,a.row*m.ch,m.cw,m.ch,Math.round(this.x-w/2),Math.round(this.y-h),Math.round(w),Math.round(h))}
+}
+const alex=new Actor('alex',1170,628,'up'), sergio=new Actor('sergio',-120,628,'right');sergio.visible=false;
+async function play(actor,anim,ms=700){actor.anim=anim;actor.ft=0;await sleep(ms);actor.anim=null}
+
+/* ---------- Diálogo ---------- */
+const D={res:null,full:'',i:0,done:false,timer:null,typer:null,audio:null};
+function say(who,text,mood){
+ const sp=SPK[who]||SPK.alex,id=lineId(who,text);GUION.push({id,who:sp.name,text});
+ return new Promise(res=>{
+  clearInterval(D.typer);clearTimeout(D.timer);
+  D.res=res;D.full=text;D.i=0;D.done=false;
+  const pf=$('#dlgPf');pf.style.background=sp.bg||'';pf.innerHTML=sp.face?`<img src="${faceSrc(sp.face,mood)}" alt="">`:`<span class="tag">${sp.tag}</span>`;
+  $('#dlgNm').textContent=sp.name+(sp.phone?' · al teléfono':'');$('#dlgNm').style.color=sp.color;$('#dlgLn').textContent='';$('#dlg').hidden=false;
+  if(VOICE_BASE){try{D.audio=new Audio(`${VOICE_BASE}/${id}.mp3`);D.audio.play().catch(()=>{});D.audio.onended=()=>{if(S.auto)finishLine()}}catch(e){}}
+  D.typer=setInterval(()=>{D.i++;$('#dlgLn').textContent=D.full.slice(0,D.i);if(!VOICE_BASE&&D.i%2&&/\w/.test(D.full[D.i-1]||''))SFX.blip(sp.pitch+rnd(-25,25));if(D.i>=D.full.length)typed()},26);
+ })}
+function typed(){clearInterval(D.typer);D.done=true;$('#dlgLn').textContent=D.full;if(S.auto&&!(VOICE_BASE&&D.audio&&!D.audio.ended))D.timer=setTimeout(finishLine,1100+D.full.length*42)}
+function finishLine(){clearTimeout(D.timer);clearInterval(D.typer);if(D.audio){D.audio.pause();D.audio=null}$('#dlg').hidden=true;const r=D.res;D.res=null;r&&r()}
+function advance(){if(!D.res)return false;if(!D.done)typed();else finishLine();return true}
+$('#dlg').addEventListener('pointerdown',e=>{e.stopPropagation();advance()});
+async function talk(lines){for(const l of lines)await say(...l)}
+
+/* ---------- Pantallas especiales ---------- */
+async function card(text,ms=2400){$('#cardTx').textContent=text;$('#card').hidden=false;SFX.jingle();await sleep(ms);$('#card').hidden=true}
+async function closeup(who,mood,cap,ms=1700){$('#closeImg').src=faceSrc(who,mood);$('#closeCap').textContent=cap||'';$('#close').hidden=false;await sleep(ms);$('#close').hidden=true}
+
+/* ---------- Hotspots ---------- */
+const HS=[
+ {id:'cama',n:'Cama',r:[1010,652,590,148],w:[1150,640],d:'down'},
+ {id:'tv',n:'Tele',r:[1185,338,215,132],w:[1280,622],d:'up'},
+ {id:'consola',n:'Consola',r:[1158,498,195,82],w:[1255,626],d:'up'},
+ {id:'mando',n:'Mando de la tele',r:[245,700,80,62],w:[300,632],d:'down'},
+ {id:'lata',n:'Lata',r:[322,650,55,65],w:[360,632],d:'down'},
+ {id:'taza',n:'Taza marciana',r:[436,662,66,70],w:[470,632],d:'down'},
+ {id:'cenicero',n:'Cenicero',r:[475,722,80,48],w:[515,632],d:'down'},
+ {id:'comics',n:'Cómics y juegos',r:[135,640,165,95],w:[220,632],d:'down'},
+ {id:'mandoplay',n:'Mando de la Play',r:[538,665,95,55],w:[585,632],d:'down'},
+ {id:'buho',n:'Búho hucha',r:[860,193,60,77],w:[892,618],d:'up'},
+ {id:'figuras',n:'Figuras',r:[925,195,140,75],w:[995,618],d:'up'},
+ {id:'estanteria',n:'Estantería',r:[868,270,280,310],w:[1010,618],d:'up'},
+ {id:'mac',n:'Mac viejo',r:[505,300,110,90],w:[565,614],d:'up'},
+ {id:'neverita',n:'Neverita',r:[545,450,97,118],w:[595,616],d:'up'},
+ {id:'cajon',n:'Cajón',r:[78,400,88,108],w:[150,612],d:'up'},
+ {id:'armario',n:'Armario',r:[250,110,262,455],w:[380,612],d:'up'},
+ {id:'poster',n:'Póster',r:[670,145,158,162],w:[750,620],d:'up'},
+ {id:'lampara',n:'Lámpara',r:[520,178,75,122],w:[560,614],d:'up'},
+ {id:'ajedrez',n:'Ajedrez',r:[0,322,160,68],w:[140,612],d:'left'},
+ {id:'silla',n:'Silla gamer',r:[630,300,215,315],w:[740,640],d:'up'},
+ {id:'cuadro',n:'Cuadro de marcianitos',r:[1410,405,140,72],w:[1440,622],d:'up'},
+ {id:'papelera',n:'Papelera',r:[798,512,58,72],w:[830,622],d:'up'},
+].map(h=>({...h,area:h.r[2]*h.r[3]})).sort((a,b)=>a.area-b.area);
+function hotAt(x,y){return HS.find(h=>x>=h.r[0]&&x<=h.r[0]+h.r[2]&&y>=h.r[1]&&y<=h.r[1]+h.r[3])}
+function clampFloor(x,y){x=Math.max(110,Math.min(1490,x));const maxY=(x>660&&x<1010)?700:648;return[x,Math.max(600,Math.min(maxY,y))]}
+
+const LOOK={
+ tv:['Una tele. Ahora mismo apagada, como mis ganas de ver más pumas.'],
+ consola:['Mi vieja Play. Treinta años de servicio y ni una queja. Bueno, alguna.'],
+ mando:['El mando de la tele. Ese sí que aparece siempre. El móvil, nunca. Así funciona el universo.'],
+ lata:['Una lata de refresco. Sabe a nostalgia y a gas.'],
+ taza:['Una taza con un marciano. Tiene café del… ¿martes pasado?'],
+ cenicero:['Un cenicero. Algún día lo vaciaré. Hoy no es ese día.'],
+ comics:['Cómics y juegos. Mi biblioteca personal. Bueno, mi única biblioteca.'],
+ mandoplay:['Un mando sin consola encendida es un pisapapeles con botones.'],
+ buho:['Mi búho hucha. Lleva años mirándome con cara de juicio.'],
+ figuras:['Mis figuras. No son muñecos, son coleccionables. Hay una diferencia. Creo.'],
+ estanteria:['Juegos y libros que no he leído, ordenados por color para disimular.'],
+ mac:['Mi viejo Mac. No se enciende desde que existía el Messenger.'],
+ neverita:['La neverita. Ahí guardo las cosas que tienen que estar fresquitas.'],
+ cajon:['Un cajón. Dentro hay… cajonidades.'],
+ armario:['El armario. No lo abro. Si lo abro, lo que hay dentro sale solo.'],
+ poster:['Fíjate en la boca del tío del póster. Eso es claramente un error de la IA.'],
+ lampara:['Una lámpara.','Sigue siendo una lámpara. No va a evolucionar.'],
+ ajedrez:['Un ajedrez. Lo tengo para parecer listo cuando viene gente.'],
+ silla:['Mi silla gamer. Tiene más horas de vuelo que un piloto.'],
+ cuadro:['Marcianitos. Esto es arte, y lo demás son tonterías.'],
+ papelera:['La papelera. Mi mejor triple fue aquí. Fallé.'],
+ cama:['Mi cama. Mi zona de confort. Literalmente.'],
+};
+async function look(h){const L=LOOK[h.id]||['No hay nada interesante.'];const n=S.looks[h.id]=(S.looks[h.id]||0)+1;
+ if(n>L.length+1){await say('alex',['Ya lo he mirado. Sigue igual.','Jugador, te veo. Deja de hacer clic ahí.','Si sigues haciendo clic, no va a pasar nada nuevo. Lo prometo.'][n%3],'confused');return}
+ await say('alex',L[Math.min(n-1,L.length-1)])}
+
+/* ---------- Pistas ---------- */
+const HINTS={
+ find_phone:[['alex','¿Dónde habré dejado el móvil? Piensa, Segu, piensa.','confused'],['alex','Si yo fuera un teléfono, me escondería donde paso veinte horas al día…'],['alex','Vale, jugador, te lo digo claro: mira en la cama.','laugh']],
+ calling:[['alex','Llama a alguien. Alguno estará tan aburrido como yo.'],['alex','Me quedan contactos en la agenda. Alguien dirá que sí. Estadísticamente.']],
+ what_to_do:[['sergio','Si tuviéramos algo con mando… y que no fuera la tele…'],['sergio','Debajo de la tele hay algo que hace siglos que no enciendes.'],['sergio','Vale, lo digo yo: LA PLAY. Dale a la consola.','laugh']],
+ inspiration:[['alex','¿Dónde guardaría yo la inspiración? En algún sitio con plumas…'],['sergio','Ese búho hucha lleva años engordando, Segu.'],['sergio','EL BÚHO. Rompe el búho.','laugh']],
+};
+function buildHint(){
+ if(!has('destornillador')&&!S.usedScrew)return['sergio','Los destornilladores viven en cajones. Es ley de vida. Mira el mueble de la izquierda.'];
+ if(!has('placa')&&!S.pcBuilt)return['sergio','La Play ya no la vamos a usar… ¿no? Tiene tripas aprovechables.'];
+ if(!has('ram')&&!S.pcBuilt)return['alex','Tengo sed. Bueno, no. Pero mira la neverita, por si acaso.'];
+ if(!has('procesador')&&!S.pcBuilt)return['sergio','Ese Mac lleva años sin encenderse. Seguro que dentro hay algo que nos sirve.'];
+ if(!S.pcBuilt)return['alex','Ya está todo. Ahora a la neverita: será la torre más fresca del barrio.'];
+ if(!has('cd'))return['sergio','Un ordenador sin juego es un radiador con lucecitas. Mira en la estantería.'];
+ return['alex','Mete el CD en el ordenador-nevera. Selecciónalo y haz clic en la neverita.'];
+}
+async function giveHint(){S.lastAct=performance.now();if(S.phase==='build'){await say(...buildHint());return}const L=HINTS[S.phase];if(!L)return;await say(...L[Math.min(S.hintIdx,L.length-1)]);S.hintIdx++}
+async function miss(){S.misses++;if(S.misses%4===0&&['find_phone','what_to_do','inspiration','build'].includes(S.phase))await giveHint()}
+$('#hintBtn').addEventListener('pointerdown',async e=>{e.stopPropagation();if(S.busy||D.res)return;S.busy=true;await giveHint();S.busy=false});
+
+/* ---------- Interacciones por fase ---------- */
+const HANDLERS={
+ find_phone:{
+  async cama(){await play(alex,'pickup',900);SFX.pick();await say('alex','¡Ajá! Entre las sábanas, junto a tres patatas fritas y una moneda de veinte duros.','laugh');await say('alex','Esto ya no es buscar, es arqueología.');addItem('movil');setPhase('calling');openPhone();return true}
+ },
+ what_to_do:{
+  async tv(){await talk([['alex','¿Y si vemos la tele?'],['sergio','¿Más pumas? Ya sé todo lo que hay que saber de pumas. Y no quiero saber más.','confused']])},
+  async estanteria(){await talk([['alex','¿Leemos algo?'],['sergio','Tío, he venido a tu casa, no a la biblioteca.','confused']])},
+  async ajedrez(){await talk([['alex','¿Una partidita de ajedrez?'],['sergio','La última vez tardaste cuarenta minutos en mover un peón.','smile']])},
+  async armario(){await talk([['alex','¿Nos probamos ropa?'],['sergio','¿Qué somos, influencers?','confused']])},
+  async mac(){await talk([['alex','¿Vemos vídeos de gatos?'],['sergio','Hemos pasado de pumas a gatos. Esto es involución.','confused']])},
+  async cama(){await talk([['alex','¿Siesta?'],['sergio','Son las siete de la tarde.'],['alex','Por eso.']])},
+  async mandoplay(){await talk([['sergio','Un mando… Si hubiera algo donde enchufarlo…'],['alex','Qué misterio.']])},
+  async buho(){await talk([['sergio','Ese búho nos está juzgando.'],['alex','A ti. A mí me adora.','smile']])},
+  async consola(){
+   await talk([['alex','¿Una partidita a la Play?'],['sergio','Ahora sí nos entendemos.','laugh']]);
+   await play(alex,'interact',700);SFX.power();S.consoleOn=true;await sleep(1300);
+   SFX.fizz();S.consoleDead=true;S.consoleOn=false;await sleep(1400);
+   await talk([['alex','…¿Eso es humo?','confused'],['sergio','Ha muerto como vivió: echando humo.'],['alex','Descanse en paz. Treinta años de servicio. Ni un día de baja.'],['sergio','¿Y ahora qué?','confused'],['alex','Ahora… necesitamos inspiración.']]);
+   setPhase('inspiration');return true}
+ },
+ inspiration:{
+  async consola(){await say('alex','Déjala. Está descansando. Para siempre.')},
+  async neverita(){await say('sergio','La inspiración no está en la nevera, Segu. Ahí solo hay cosas frías.')},
+  async tv(){await say('sergio','Si vuelvo a ver un puma, me hago vegano.')},
+  async buho(){
+   await talk([['alex','Mi búho hucha. Mi abuela me dijo que solo lo rompiera en caso de emergencia.'],['sergio','Segu. Mira a tu alrededor. Esto es una emergencia.'],['alex','…Tienes razón.']]);
+   await play(alex,'interact',600);SFX.crash();S.owlBroken=true;S.shake=.4;await sleep(700);
+   await say('sergio','¡Toma ya! A ver qué escondía el pajarraco.','laugh');openOwl();return true}
+ },
+ build:{
+  async cajon(){
+   if(has('destornillador')||S.usedScrew){await say('alex','El cajón ya está vacío. Bueno, quedan cajonidades.');return}
+   if(!S.drawerTry){S.drawerTry=1;await play(alex,'interact',600);SFX.click();await talk([['alex','Está atascado. Este cajón tiene más resistencia que yo un lunes.','confused'],['sergio','Tira con ganas. Como cuando abres un yogur.']]);return}
+   await play(alex,'interact',600);SFX.crash();await say('alex','¡Hop! Un destornillador. Los destornilladores viven en los cajones. Es ley de vida.','laugh');addItem('destornillador');renderObj()},
+  async consola(item){
+   if(has('placa')||S.pcBuilt){await say('alex','Ya no le queda nada útil. Ni dignidad.');return}
+   if(!has('destornillador')){await talk([['alex','Para sacarle las tripas a la consola necesito algo para desatornillar.'],['sergio','Y no, a mordiscos no vale.']]);return}
+   if(item!=='destornillador'){await say('alex','Esto se abre con el destornillador. Selecciónalo y úsalo aquí.');return}
+   await play(alex,'interact',1200);SFX.screw();await sleep(300);
+   await say('alex','Placa base fuera. Tranquila, tu sacrificio no será en vano.');addItem('placa');renderObj()},
+  async mac(item){
+   if(has('procesador')||S.pcBuilt){await say('alex','Ya le he quitado el procesador. Ahora es un Mac de decoración. Como los de las tiendas.');return}
+   if(!has('destornillador')){await say('alex','Pide contraseña. Y la contraseña es "contraseña"… No, tampoco. Mejor lo abro por dentro.');return}
+   if(item!=='destornillador'){await say('alex','Para abrirlo me hará falta el destornillador.');return}
+   await say('sergio','¿Le vas a quitar el procesador a un Mac con un destornillador normal?','confused');
+   await play(alex,'interact',1200);SFX.screw();
+   await say('alex','Con fe, todo se puede. Perdóname, Steve.');addItem('procesador');renderObj()},
+  async neverita(item){
+   if(S.pcBuilt){
+    if(item==='cd'||(has('cd')&&!item)){await ending();return}
+    await say('alex','Ahí lo tienes. Un ordenador refrigerado de serie. Le falta un juego.');return}
+   if(!has('ram')&&!S.gotBox){await play(alex,'pickup',900);SFX.pick();await talk([['alex','Una memoria RAM. En la nevera.','confused'],['sergio','Para que no se caliente.'],['alex','Tiene sentido. Y vacía, la neverita es una torre perfecta.','smile']]);addItem('ram');S.gotBox=true;renderObj();return}
+   if(['placa','ram','procesador'].every(has)){
+    await say('alex','Placa, RAM, procesador y caja. Vamos a ello.');
+    await play(alex,'interact',1500);SFX.screw();await sleep(500);SFX.screw();
+    ['placa','ram','procesador'].forEach(dropItem);S.pcBuilt=true;SFX.power();renderObj();await sleep(600);
+    await talk([['sergio','¿Y esas luces de colores? Si no teníamos luces.','confused'],['alex','Eso es claramente un error de la IA.'],['alex','Pero con luces RGB va un 30% más rápido. Es ciencia.','laugh']]);
+    if(!has('cd'))await say('sergio','Ahora solo falta un juego.');return}
+   const miss=['placa','ram','procesador'].filter(k=>!has(k)).map(k=>ITEMS[k].toLowerCase());
+   await say('alex',`La caja está lista, pero aún me falta: ${miss.join(', ')}.`)},
+  async estanteria(){
+   if(has('cd')){await say('alex','El resto son juegos de la Play. Que en paz descanse.');return}
+   await play(alex,'interact',700);await say('alex','Tekken 3. Un clásico. Me lo llevo.','smile');addItem('cd');renderObj()},
+  async tv(item){if(item==='cd'){await say('alex','La tele no lee CDs. El ordenador-nevera sí. Bueno, eso espero.');return}await say('sergio','Cuando el ordenador esté listo, lo enchufamos a la tele.')},
+ }
+};
+
+async function interact(h){
+ const item=S.sel;S.sel=null;renderInv();S.lastAct=performance.now();
+ const set=HANDLERS[S.phase]||{};
+ if(set[h.id]){const r=await set[h.id](item);if(r===true)return;if(S.phase!=='build')await miss();return}
+ if(item){await say('alex',`Usar ${ITEMS[item].toLowerCase()} con ${h.n.toLowerCase()} no tiene ningún sentido. Ni en una aventura gráfica.`,'confused');return}
+ if(S.phase==='inspiration'&&Math.random()<.35){await say('sergio','Inspiración, Segu. Céntrate.');await miss();return}
+ await look(h);await miss();
+}
+
+/* ---------- Teléfono ---------- */
+const CALLS={
+ skater:async c=>{
+  if(c.status){await callLine('sys','El número marcado no existe o está fuera de cobertura.');await say('alex','Golpe moral.','confused');return}
+  await callLine('skater','¡Claro, tío! Voy ahora mismo.');hang();await sleep(900);
+  await sms('Skater','Al final no puedo, tío. Lo siento.');await say('alex','Clásico Skater.','smile');return 'no'},
+ josep:async()=>{await callLine('josep','Sorry, tío. Ya no fumo.');hang();await sleep(400);await closeup('alex','laugh','*guiño guiño*',1900);return 'no'},
+ aida:async()=>{await callLine('aida','[Aquí va el audio de Aida]');hang();return 'no'},
+ ruiz:async()=>{await callLine('ruiz','[Aquí va el audio de Ruiz]');hang();return 'no'},
+ guillem:async()=>{await callLine('guillem','No puedo, me voy al gym.');await say('alex','¿Otra vez? Si fuiste ayer.');await callLine('guillem','Y mañana también. Hoy toca pierna.');hang();await say('alex','Guillem no se ha saltado nunca un día de pierna. Los planes conmigo, todos.');return 'no'},
+ guevara:async()=>{await callLine('guevara','¡Imposible! Me voy a La Bisbal d\'Empordà, que tocan los Punkarracats.');await say('alex','¿Un martes?','confused');await callLine('guevara','El punk no entiende de calendarios.');hang();return 'no'},
+ sara:async()=>{await callLine('sara','No puedo, estoy con el Nil.');await say('alex','Vale. Saluda al Nil.');await callLine('sara','Dice el Nil que hola.');hang();return 'no'},
+ aaron:async()=>{await callLine('aaron','Tío, acabo de salir a dar una vuelta con la bici.');await say('alex','¿Y por dónde andas?');await callLine('aaron','Volviendo de Zaragoza.');await say('alex','Una vuelta. A Zaragoza.','confused');await callLine('aaron','Cortita, para calentar.');hang();return 'no'},
+ aitor:async()=>{await callLine('aitor','Uf, he quedado con el Nate y esos.');await say('alex','¿Y quiénes son "esos"?');await callLine('aitor','Pues esos.');hang();await say('alex','Ah, esos.');return 'no'},
+ agui:async()=>{await callLine('agui','Ahora no puedo. Estoy en Hogwarts, en un congreso de magia.');await say('alex','¿Y hay cobertura en Hogwarts?','confused');await callLine('agui','No. Te estoy contestando por lechuza.');hang();await say('alex','…Ese búho de la estantería me está mirando raro.');return 'no'},
+ andrea:async()=>{await callLine('andrea','¿Tú estás tonto? Sabes que estoy en California.');await say('alex','Ya, pero por si acaso.');hang();await say('alex','Ni con nueve horas de diferencia me dicen que sí.');return 'no'},
+ idoia:async()=>{await callLine('idoia','¡Hola! Sí, sí, me apetece. ¿Puedo ir con los niños?');hang();await sleep(500);await say('alex','…Uy, se ha cortado. Qué mala cobertura hay en esta casa.','smile');return 'no'},
+ sergio:async()=>{await callLine('sergio','¿Qué pasa, Segu?');await say('alex','Aquí, viendo un documental de pumas.');await callLine('sergio','¿Otra vez los pumas?');await say('alex','Me he aburrido hasta yo. ¿Te vienes?');await callLine('sergio','Voy para allá.');hang();return 'yes'},
+};
+let calling=false;
+function renderPhone(){const L=$('#phList');L.innerHTML='';CONTACTS.forEach(c=>{const li=document.createElement('li'),b=document.createElement('button');b.innerHTML=`<span>${c.name}</span><span class="st">${c.status==='no'?'✗':c.status==='yes'?'✓':''}</span>`;b.onclick=e=>{e.stopPropagation();dial(c)};li.appendChild(b);L.appendChild(li)})}
+function openPhone(){renderPhone();$('#phList').hidden=false;$('#phCall').hidden=true;$('#phSms').hidden=true;$('#phTitle').textContent='Agenda';$('#phone').hidden=false;alex.anim='phone';alex.ft=0}
+function closePhone(){$('#phone').hidden=true;alex.anim=null}
+$('#phone').addEventListener('pointerdown',e=>e.stopPropagation());
+$('#phClose').onclick=()=>{if(!calling)closePhone()};
+async function callLine(who,text){await say(who,text)}
+function hang(){SFX.hang();$('#phCall').innerHTML='<b>Llamada finalizada</b>'}
+async function sms(from,text){SFX.sms();const s=$('#phSms');s.innerHTML=`<b>${from}:</b> ${text}`;s.hidden=false;await sleep(1700)}
+async function dial(c){
+ if(calling||S.phase!=='calling')return;calling=true;S.lastAct=performance.now();
+ $('#phList').hidden=true;$('#phSms').hidden=true;$('#phTitle').textContent='Llamando';const pc=$('#phCall');pc.hidden=false;pc.innerHTML=`<span>Llamando a</span><b>${c.name}</b><span>· · ·</span>`;
+ SFX.dial();await sleep(600);const rings=c.id==='sergio'?3:c.id==='skater'&&c.status?1:2;for(let i=0;i<rings;i++){SFX.ring();await sleep(1250)}
+ if(!(c.id==='skater'&&c.status)){pc.innerHTML=`<span>En llamada</span><b>${c.name}</b><span>00:0${1+Math.floor(Math.random()*8)}</span>`}
+ const r=await CALLS[c.id](c);if(r)c.status=r;await sleep(500);
+ calling=false;
+ if(r==='yes'){closePhone();await arrival();return}
+ openPhone();
+}
+
+/* ---------- Búho ---------- */
+const OWL=[
+ {id:'ticket',n:'Un ticket',col:'#f4ead6',lines:[['alex','Tres kebabs y una Fanta. Fecha: 2009. Un buen día.','smile']]},
+ {id:'clip',n:'Un clip',col:'#c7c0b0',lines:[['sergio','"Parece que estás intentando escribir una carta. ¿Necesitas ayuda?"'],['alex','Vuelve a tu época, clip.']]},
+ {id:'moneda',n:'Cinco duros',col:'#ffcf6b',lines:[['alex','Cinco duros. En el 98 con esto me compraba media tienda de chuches.']]},
+ {id:'porro',n:'Inspiración de emergencia',col:'#8fd18b',lines:[]},
+];
+function drawIcon(c,id,col){const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.clearRect(0,0,16,16);x.fillStyle=col;
+ if(id==='ticket'){x.fillRect(4,1,8,14);x.fillStyle='#8a7f6a';for(let i=3;i<13;i+=2)x.fillRect(5,i,6,1)}
+ if(id==='clip'){x.fillRect(5,2,6,1);x.fillRect(4,3,1,10);x.fillRect(11,3,1,9);x.fillRect(5,13,5,1);x.fillRect(7,5,1,6);x.fillRect(9,5,1,7)}
+ if(id==='moneda'){x.beginPath();x.arc(8,8,6,0,7);x.fill();x.fillStyle='#a77a1e';x.fillRect(7,5,2,6)}
+ if(id==='porro'){x.save();x.translate(8,8);x.rotate(-.5);x.fillStyle='#f4ead6';x.fillRect(-7,-1,12,3);x.fillStyle='#e0473c';x.fillRect(5,-1,2,3);x.restore();x.fillStyle='rgba(200,200,200,.7)';x.fillRect(13,3,1,2);x.fillRect(12,1,1,2)}}
+function openOwl(){S.owlOpen=true;const box=$('#owlItems');box.innerHTML='';OWL.forEach(o=>{const b=document.createElement('button');const c=document.createElement('canvas');c.width=c.height=16;drawIcon(c,o.id,o.col);b.appendChild(c);b.appendChild(document.createTextNode(o.n));
+ b.onclick=async e=>{e.stopPropagation();if(D.res||S.owlBusy)return;S.owlBusy=true;b.classList.add('seen');
+  if(o.id==='porro'){$('#owlbox').hidden=true;S.owlOpen=false;await smokeScene();S.owlBusy=false;return}
+  await talk(o.lines);S.owlBusy=false};box.appendChild(b)});$('#owlbox').hidden=false}
+$('#owlbox').addEventListener('pointerdown',e=>{if(D.res){advance()}e.stopPropagation()});
+
+/* ---------- Escenas ---------- */
+async function intro(){
+ S.busy=true;setPhase('intro');S.tvOn=true;alex.x=1170;alex.y=628;alex.dir='up';$('#hud').hidden=false;renderObj();
+ await sleep(900);
+ await say('tv','El puma es un animal solitario. Puede pasar hasta veinte horas al día tumbado sin hacer absolutamente nada.');
+ alex.dir='down';await sleep(400);
+ await say('alex','…Me está describiendo a mí.','smile');
+ alex.dir='up';
+ await say('tv','Y cuando el puma se aburre, sale en busca de otros pumas.');
+ await say('alex','Vale, tele. Mensaje recibido.');
+ await play(alex,'interact',600);SFX.tvoff();S.tvOn=false;await sleep(500);
+ alex.dir='down';
+ await say('alex','Voy a ver si alguien quiere quedar. ¿Dónde habré dejado el móvil?','confused');
+ setPhase('find_phone');S.busy=false;
+}
+async function arrival(){
+ S.busy=true;setPhase('cut');
+ await card('FEW MINUTES LATER…',2600);
+ alex.x=800;alex.y=650;alex.dir='down';
+ await sleep(500);SFX.bell();await sleep(1500);
+ await say('alex','¡No voy!');
+ await closeup('alex','confused','',1500);
+ await say('alex','…Bueno, sí voy.','smile');
+ await alex.walkTo(160,628);alex.dir='left';SFX.click();await sleep(400);
+ sergio.visible=true;sergio.x=-90;sergio.y=632;sergio.walkTo(330,632);await sleep(250);alex.walkTo(560,630);await sleep(1300);
+ alex.dir='left';sergio.dir='right';
+ await talk([['sergio','¡Segu!','laugh'],['alex','¡Sergio! Pasa, pasa. No mires el desorden.'],['sergio','¿Qué desorden? Si esto es un museo.','smile'],['sergio','Bueno, ¿y qué hacemos?'],['alex','Ni idea. Mira a ver si se te ocurre algo.','confused']]);
+ setPhase('what_to_do');S.busy=false;
+}
+async function smokeScene(){
+ S.busy=true;
+ await talk([['alex','Inspiración de emergencia.','smile'],['sergio','Josep se lo pierde.','laugh']]);
+ await play(alex,'interact',800);
+ for(let i=0;i<=40;i++){S.haze=i/40;await sleep(40)}
+ cv.style.filter='saturate(1.7) hue-rotate(25deg) contrast(1.05)';
+ await talk([['sergio','¿Notas algo?'],['alex','Noto que el póster me está mirando.','confused'],['sergio','El póster siempre te ha mirado, Segu.'],['alex','…','confused']]);
+ S.bulb=1;SFX.bulb();await sleep(900);
+ await talk([['alex','¡Ya lo tengo! ¡Vamos a construir un ordenador!','laugh'],['sergio','Pero si no tenemos ni idea.','confused'],['alex','Eso no ha frenado nunca a nadie en internet.'],['sergio','Vale. Necesitamos placa base, memoria, procesador y una caja.'],['alex','Y un destornillador. Que yo con las uñas no abro ni un yogur.']]);
+ S.bulb=0;cv.style.filter='';for(let i=40;i>=10;i--){S.haze=i/40;await sleep(30)}
+ setPhase('build');S.busy=false;
+}
+async function ending(){
+ S.busy=true;dropItem('cd');
+ await play(alex,'interact',800);SFX.click();
+ await talk([['sergio','Tekken 3 es de la Play. No va a funcionar en un PC hecho con una nevera.','confused'],['alex','Shhh. Ya has roto la cuarta pared varias veces hoy. Déjanos esta.']]);
+ alex.walkTo(1180,630);sergio.walkTo(1380,630);await sleep(1600);alex.dir='up';sergio.dir='up';
+ S.tvGame=true;SFX.power();await sleep(1400);
+ await talk([['sergio','…Eso no es Tekken.','confused'],['alex','Eso es claramente un error de la IA.'],['alex','Calla y coge el mando.','laugh']]);
+ cv.style.transform='scale(6.5)';await sleep(1700);
+ cv.style.transition='none';cv.style.transform='';S.mode='fightsel';$('#hud').hidden=true;$('#hintBtn').hidden=true;void cv.offsetWidth;cv.style.transition='';
+ openSelect();S.busy=false;
+}
+
+/* ---------- Entrada (clics) ---------- */
+function toCanvas(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H]}
+$('#stage').addEventListener('pointerdown',async e=>{
+ if(advance())return;
+ if(S.mode!=='room'||S.busy||!['find_phone','calling','what_to_do','inspiration','build'].includes(S.phase))return;
+ if(!$('#phone').hidden)return;
+ const[x,y]=toCanvas(e);const h=hotAt(x,y);
+ if(h){S.busy=true;$('#label').textContent='';const ok=await alex.walkTo(...clampFloor(...h.w));if(ok){alex.dir=h.d;await interact(h)}S.busy=false;followSergio();return}
+ if(y>560){alex.walkTo(...clampFloor(x,y)).then(ok=>ok&&followSergio())}
+});
+$('#stage').addEventListener('pointermove',e=>{const lb=$('#label');if(S.mode!=='room'||S.busy||!$('#phone').hidden){lb.textContent='';return}const[x,y]=toCanvas(e);const h=hotAt(x,y);cv.style.cursor=h?'pointer':'crosshair';
+ lb.textContent=h?(S.sel?`Usar ${ITEMS[S.sel]} con ${h.n}`:h.n):'';const r=$('#stage').getBoundingClientRect();lb.style.left=(e.clientX-r.left)+'px';lb.style.top=(e.clientY-r.top)+'px'});
+function followSergio(){if(!sergio.visible||S.mode!=='room')return;const side=alex.x>800?-1:1;const[x,y]=clampFloor(alex.x+side*190,alex.y+4);if(Math.hypot(sergio.x-x,sergio.y-y)>60)sergio.walkTo(x,y).then(()=>{sergio.dir=side>0?'left':'right'})}
+
+/* ---------- Dibujo de la habitación ---------- */
+let NOW=0;const smoke=[];
+function drawTV(){const x=1194,y=347,w=198,h=114;
+ if(S.tvOn){ctx.save();ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();
+  const g=ctx.createLinearGradient(0,y,0,y+h);g.addColorStop(0,'#f2b56b');g.addColorStop(.6,'#d77a45');g.addColorStop(1,'#6b4a2a');ctx.fillStyle=g;ctx.fillRect(x,y,w,h);
+  ctx.fillStyle='#8a5a33';ctx.beginPath();ctx.moveTo(x,y+80);ctx.lineTo(x+60,y+55);ctx.lineTo(x+110,y+75);ctx.lineTo(x+160,y+50);ctx.lineTo(x+w,y+70);ctx.lineTo(x+w,y+h);ctx.lineTo(x,y+h);ctx.fill();
+  const px=x+((NOW*22)%(w+80))-40,py=y+86;ctx.fillStyle='#3a2414';ctx.fillRect(px,py-10,34,12);ctx.fillRect(px+30,py-17,10,10);ctx.fillRect(px+31,py-20,3,4);ctx.fillRect(px+36,py-20,3,4);ctx.fillRect(px-10,py-12,12,3);
+  const step=Math.floor(NOW*6)%2;ctx.fillRect(px+2+step*3,py,4,9);ctx.fillRect(px+26-step*3,py,4,9);
+  ctx.fillStyle='rgba(255,255,255,.08)';for(let i=0;i<h;i+=3)ctx.fillRect(x,y+i,w,1);
+  ctx.fillStyle='#fff';ctx.font='10px "Pixelify Sans",monospace';ctx.fillText('CANAL FAUNA',x+6,y+14);ctx.restore();
+  ctx.fillStyle='rgba(242,181,107,.12)';ctx.fillRect(x-40,y+h,w+80,160)}
+ if(S.tvGame){ctx.save();ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();const g=ctx.createLinearGradient(0,y,0,y+h);g.addColorStop(0,'#2a1640');g.addColorStop(1,'#c2563a');ctx.fillStyle=g;ctx.fillRect(x,y,w,h);
+  ctx.textAlign='center';ctx.font='700 28px "Pixelify Sans",monospace';ctx.fillStyle='#e0473c';ctx.fillText('STREET',x+w/2+2,y+48);ctx.fillStyle='#ffcf6b';ctx.fillText('STREET',x+w/2,y+46);
+  ctx.font='700 34px "Pixelify Sans",monospace';ctx.fillStyle='#e0473c';ctx.fillText('PUMAS',x+w/2+2,y+84);ctx.fillStyle='#ffcf6b';ctx.fillText('PUMAS',x+w/2,y+82);
+  if(Math.floor(NOW*2)%2){ctx.font='12px "Pixelify Sans",monospace';ctx.fillStyle='#fff';ctx.fillText('PRESS START',x+w/2,y+104)}ctx.textAlign='left';ctx.restore()}
+}
+function drawRoom(){
+ ctx.imageSmoothingEnabled=false;
+ if(IMG.room)ctx.drawImage(IMG.room,0,0,W,H);else{ctx.fillStyle='#000';ctx.fillRect(0,0,W,H)}
+ drawTV();
+ if(S.owlBroken){ctx.fillStyle='rgb(14,82,91)';ctx.fillRect(858,190,64,76);ctx.fillStyle='#7a4a24';[[864,262,9,6],[880,264,7,4],[896,261,10,7],[910,264,6,4]].forEach(r=>ctx.fillRect(...r));ctx.fillStyle='#e0b070';ctx.fillRect(887,258,6,6)}
+ if(S.consoleOn){ctx.fillStyle=`rgba(127,214,255,${.25+.2*Math.sin(NOW*10)})`;ctx.fillRect(1262,505,90,40)}
+ if(S.consoleDead&&Math.random()<(S.phase==='inspiration'||S.phase==='what_to_do'?.5:.12))smoke.push({x:1300+rnd(-20,20),y:510,vx:rnd(-8,8),vy:rnd(-40,-25),r:rnd(6,12),t:0});
+ if(S.pcBuilt){const c=['#ff4d6d','#ffd166','#06d6a0','#4cc3ff','#c77dff'];for(let i=0;i<5;i++){ctx.fillStyle=c[(i+Math.floor(NOW*4))%5];ctx.fillRect(552+i*17,556,10,6)}ctx.fillStyle=`hsla(${NOW*90%360},90%,60%,.22)`;ctx.fillRect(545,450,97,118);ctx.fillStyle='rgba(76,195,255,.15)';ctx.fillRect(525,560,140,40)}
+ const actors=[alex,sergio].sort((a,b)=>a.y-b.y);actors.forEach(a=>a.draw());
+ for(let i=smoke.length-1;i>=0;i--){const p=smoke[i];p.t+=1/60;p.x+=p.vx/60;p.y+=p.vy/60;p.r+=.25;const a=Math.max(0,.45-p.t*.18);if(a<=0){smoke.splice(i,1);continue}ctx.fillStyle=`rgba(190,190,190,${a})`;ctx.fillRect(p.x-p.r,p.y-p.r,p.r*2,p.r*2)}
+ if(S.bulb){const bx=alex.x,by=alex.y-scaleAt(alex.y)*205-60;ctx.fillStyle=`rgba(255,230,120,${.25+.15*Math.sin(NOW*8)})`;ctx.beginPath();ctx.arc(bx,by,46,0,7);ctx.fill();ctx.fillStyle='#ffe66b';ctx.fillRect(bx-16,by-24,32,30);ctx.fillRect(bx-10,by-30,20,6);ctx.fillStyle='#c7c0b0';ctx.fillRect(bx-9,by+6,18,10);ctx.fillStyle='#fff';ctx.fillRect(bx-10,by-18,6,10)}
+ if(S.haze>0){ctx.save();ctx.globalAlpha=S.haze*.5;for(let i=0;i<14;i++){const x=(i*173+NOW*18*(i%3+1))%1800-100,y=180+((i*97)%420)+Math.sin(NOW+i)*20;ctx.fillStyle='rgba(220,220,230,.35)';ctx.beginPath();ctx.arc(x,y,90+(i%4)*30,0,7);ctx.fill()}ctx.restore()}
+}
+
+/* ---------- STREET PUMAS ---------- */
+const FG=740,ATK={punch:{dur:.32,a0:.09,a1:.2,range:165,dmg:6},kick:{dur:.46,a0:.17,a1:.3,range:190,dmg:9},special:{dur:.55,a0:.24,a1:.25,range:0,dmg:13}};
+const NAME={alex:'ALEX',sergio:'SERGIO'};
+class Fighter{
+ constructor(key,x,face,cpu){Object.assign(this,{key,x,y:FG,vx:0,vy:0,face,hp:100,st:'idle',t:0,cool:0,flash:0,hitDone:false,cpu,aiT:0,ctrl:{}})}
+ get ground(){return this.y>=FG-.5}
+ attacking(){return['punch','kick','special'].includes(this.st)}
+ start(s){this.st=s;this.t=0;this.hitDone=false;if(s==='special')SFX.roar();else SFX.woosh()}
+ update(dt,o){const c=this.ctrl;this.t+=dt;this.cool=Math.max(0,this.cool-dt);this.flash=Math.max(0,this.flash-dt);
+  if(this.st==='ko'){this.vx*=.92}
+  else if(this.st==='hit'){this.vx*=.86;if(this.t>.3)this.st='idle'}
+  else if(this.attacking()){const A=ATK[this.st];if(this.ground)this.vx*=.6;
+   if(!this.hitDone&&this.t>=A.a0&&this.t<=A.a1){if(this.st==='special'){F.proj.push({x:this.x+this.face*90,y:this.y-230,dir:this.face,owner:this,t:0});this.hitDone=true}
+    else{const dx=(o.x-this.x)*this.face;if(dx>0&&dx<A.range&&Math.abs(o.y-this.y)<200){o.take(A.dmg,this.face);this.hitDone=true}}}
+   if(this.t>=A.dur)this.st='idle'}
+  else{if(this.ground)this.face=o.x>this.x?1:-1;
+   if(c.p){c.p=false;this.start('punch')}else if(c.k){c.k=false;this.start('kick')}else if(c.s){c.s=false;if(this.cool<=0){this.start('special');this.cool=2.4}}
+   else if(c.down&&this.ground){this.st='block';this.vx=0}
+   else{const mv=(c.right?1:0)-(c.left?1:0);if(this.ground){this.vx=mv*400;if(c.up){this.vy=-1300;c.up=false;SFX.jump()}}this.st=!this.ground?'jump':mv?'walk':'idle'}}
+  this.vy+=3300*dt;this.y+=this.vy*dt;if(this.y>FG){this.y=FG;this.vy=0}this.x+=this.vx*dt;this.x=Math.max(110,Math.min(1490,this.x));
+  const d=o.x-this.x;if(Math.abs(d)<100&&Math.abs(o.y-this.y)<150){const push=(100-Math.abs(d))/2*Math.sign(d||1);this.x-=push;o.x+=push}}
+ take(d,dir){if(this.st==='ko'||F.state!=='fight')return;const blk=this.st==='block'&&this.face===-dir;
+  if(blk){this.hp-=Math.ceil(d*.15);this.vx=dir*260;SFX.block();spark(this.x-dir*30,this.y-250,'#7fd6ff')}
+  else{this.hp-=d;this.st='hit';this.t=0;this.vx=dir*440;this.flash=.18;SFX.hit();spark(this.x-dir*30,this.y-260,'#ffcf6b');F.shake=.15}
+  if(this.hp<=0){this.hp=0;this.st='ko';this.t=0;this.vx=dir*520;this.vy=-700;SFX.ko();F.koT=0}}
+ draw(){const m=META[this.key];let anim='idle_right',fi=Math.floor(NOW*3)%3,rot=0,filter=null;
+  switch(this.st){case'walk':anim='walk_right';fi=Math.floor(NOW*9)%3;break;case'jump':anim='run_right';fi=1;break;case'block':anim='pickup';fi=0;break;
+   case'punch':anim='interact';fi=this.t<ATK.punch.a0?0:1;break;case'kick':anim='run_right';fi=this.t<ATK.kick.a0?1:2;break;
+   case'special':anim=this.key==='sergio'?'phone':'interact';fi=this.key==='sergio'?2:2;break;case'hit':anim='idle_right';fi=0;break;case'ko':anim='idle_right';fi=0;rot=-this.face*Math.PI/2*Math.min(1,this.t*3);break}
+  if(this.flash>0)filter='brightness(1.8) sepia(1) hue-rotate(-40deg) saturate(4)';
+  const a=m.anims[anim],s=2.05,w=m.cw*s,h=m.ch*s;
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.beginPath();ctx.ellipse(this.x,FG+4,70,14,0,0,7);ctx.fill();
+  ctx.save();ctx.translate(Math.round(this.x),Math.round(this.y));if(rot)ctx.rotate(rot);if(this.face<0)ctx.scale(-1,1);if(filter)ctx.filter=filter;
+  ctx.drawImage(IMG[this.key],fi*m.cw,a.row*m.ch,m.cw,m.ch,-w/2,-h,w,h);ctx.restore();
+  if((this.st==='punch'||this.st==='kick')&&this.t>=ATK[this.st].a0&&this.t<=ATK[this.st].a1){ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=6;ctx.beginPath();const yy=this.y-(this.st==='punch'?270:150);ctx.arc(this.x+this.face*90,yy,60,this.face>0?-1:Math.PI-.4,this.face>0?.4:Math.PI+1);ctx.stroke()}}
+}
+const F={state:'off',proj:[],sparks:[],timer:60,shake:0,msg:'',msgT:0,koT:0,p1:null,p2:null,pick:'alex'};
+function spark(x,y,col){F.sparks.push({x,y,col,t:0})}
+const keys={};
+const KEYMAP={a:'left',arrowleft:'left',d:'right',arrowright:'right',w:'up',arrowup:'up',s:'down',arrowdown:'down',j:'p',k:'k',l:'s',z:'p',x:'k',c:'s'};
+addEventListener('keydown',e=>{const k=KEYMAP[e.key.toLowerCase()];if(!k||S.mode!=='fight')return;e.preventDefault();if(!keys[k]){if(['p','k','s','up'].includes(k)&&F.p1)F.p1.ctrl[k]=true}keys[k]=true});
+addEventListener('keyup',e=>{const k=KEYMAP[e.key.toLowerCase()];if(k)keys[k]=false});
+document.querySelectorAll('#touch button').forEach(b=>{const k=b.dataset.k;b.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();keys[k]=true;if(['p','k','s','up'].includes(k)&&F.p1)F.p1.ctrl[k]=true});['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,()=>keys[k]=false))});
+function ai(f,o,dt){f.aiT-=dt;if(f.aiT>0)return;f.aiT=rnd(.12,.26);const c=f.ctrl;c.left=c.right=c.down=false;const dx=o.x-f.x,d=Math.abs(dx),dir=Math.sign(dx);
+ if((o.attacking()&&d<240)||F.proj.some(p=>p.owner===o&&Math.abs(p.x-f.x)<300)){if(Math.random()<.5){c.down=true;f.aiT=.35;return}if(Math.random()<.3){c.up=true;return}}
+ if(d>320){if(f.cool<=0&&Math.random()<.2){c.s=true;return}if(Math.random()<.05)c.up=true;dir>0?c.right=true:c.left=true;return}
+ if(d<200){const r=Math.random();if(r<.32)c.p=true;else if(r<.52)c.k=true;else if(r<.58)c.up=true;else if(r<.72)dir>0?c.left=true:c.right=true;return}
+ dir>0?c.right=true:c.left=true}
+let arena=null;
+function buildArena(){arena=document.createElement('canvas');arena.width=W;arena.height=H;const a=arena.getContext('2d');
+ const g=a.createLinearGradient(0,0,0,FG);g.addColorStop(0,'#1d1030');g.addColorStop(.55,'#7b2c4a');g.addColorStop(1,'#f0a24a');a.fillStyle=g;a.fillRect(0,0,W,H);
+ a.fillStyle='#ffd27a';a.beginPath();a.arc(800,470,190,0,7);a.fill();a.fillStyle='#7b2c4a';for(let i=0;i<7;i++)a.fillRect(600,420+i*22,400,4+i*2);
+ const ridge=(col,base,amp,seed)=>{a.fillStyle=col;a.beginPath();a.moveTo(0,FG);for(let x=0;x<=W;x+=40)a.lineTo(x,base-Math.abs(Math.sin(x*.004+seed)*amp+Math.sin(x*.013+seed*2)*amp*.35));a.lineTo(W,FG);a.fill()};
+ ridge('#4a1d3a',560,140,1);ridge('#2e1530',640,90,4);
+ a.fillStyle='#1a0d1e';a.fillRect(1180,560,260,FG-560);a.beginPath();a.moveTo(1160,FG);a.lineTo(1200,560);a.lineTo(1420,560);a.lineTo(1460,FG);a.fill();
+ a.fillStyle='#120814';a.beginPath();a.ellipse(1310,505,85,55,0,0,7);a.fill();a.beginPath();a.arc(1350,420,42,0,7);a.fill();a.beginPath();a.moveTo(1322,392);a.lineTo(1330,360);a.lineTo(1345,385);a.fill();a.beginPath();a.moveTo(1358,385);a.lineTo(1375,358);a.lineTo(1382,395);a.fill();a.fillRect(1335,440,30,90);a.fillRect(1260,520,26,40);a.fillRect(1335,520,26,40);
+ a.strokeStyle='#120814';a.lineWidth=14;a.lineCap='round';a.beginPath();a.moveTo(1230,520);a.quadraticCurveTo(1170,540,1190,470);a.stroke();a.fillStyle='#ffcf6b';a.fillRect(1356,414,6,4);a.fillRect(1340,414,6,4);
+ a.fillStyle='#3a2014';a.fillRect(0,FG,W,H-FG);a.strokeStyle='rgba(255,207,107,.18)';a.lineWidth=2;for(let i=-20;i<=20;i++){a.beginPath();a.moveTo(800+i*40,FG);a.lineTo(800+i*160,H);a.stroke()}for(let y=FG+12;y<H;y+=y*0+14+(y-FG)*.3){a.beginPath();a.moveTo(0,y);a.lineTo(W,y);a.stroke()}}
+function openSelect(){$('#select').hidden=false;S.mode='fightsel'}
+document.querySelectorAll('#select .cards button').forEach(b=>b.addEventListener('pointerdown',e=>{e.stopPropagation();F.pick=b.dataset.p;$('#select').hidden=true;startFight()}));
+function startFight(){if(!arena)buildArena();const other=F.pick==='alex'?'sergio':'alex';F.p1=new Fighter(F.pick,450,1,false);F.p2=new Fighter(other,1150,-1,true);F.proj=[];F.sparks=[];F.timer=60;F.state='intro';F.msg='ROUND 1';F.msgT=0;F.koT=0;S.mode='fight';$('#stage').classList.add('fighting');$('#result').hidden=true;$('#footTx').innerHTML='<b>A/D</b> mover · <b>W</b> saltar · <b>S</b> cubrirse · <b>J</b> puño · <b>K</b> patada · <b>L</b> especial'}
+function fightUpdate(dt){
+ const{p1,p2}=F;F.msgT+=dt;F.shake=Math.max(0,F.shake-dt);
+ if(F.state==='intro'){if(F.msgT>1.2&&F.msg==='ROUND 1'){F.msg='¡PELEA!';F.msgT=0;SFX.fight()}else if(F.msg==='¡PELEA!'&&F.msgT>.8){F.state='fight';F.msg=''}}
+ if(F.state==='fight'||F.state==='ko'){
+  if(F.state==='fight'){Object.assign(p1.ctrl,{left:!!keys.left,right:!!keys.right,down:!!keys.down});ai(p2,p1,dt);F.timer-=dt}else{p1.ctrl={};p2.ctrl={}}
+  p1.update(dt,p2);p2.update(dt,p1);
+  for(let i=F.proj.length-1;i>=0;i--){const p=F.proj[i];p.t+=dt;p.x+=p.dir*820*dt;const tg=p.owner===p1?p2:p1;
+   if(Math.abs(p.x-tg.x)<70&&p.y>tg.y-400&&p.y<tg.y-20){tg.take(ATK.special.dmg,p.dir);F.proj.splice(i,1);continue}
+   if(p.x<-100||p.x>W+100)F.proj.splice(i,1)}
+  if(F.state==='fight'&&(p1.hp<=0||p2.hp<=0||F.timer<=0)){F.state='ko';F.msg=F.timer<=0&&p1.hp>0&&p2.hp>0?'¡TIEMPO!':'K.O.';F.msgT=0;if(F.timer<=0)SFX.ko()}
+  if(F.state==='ko'&&F.msgT>2.6){F.state='over';showResult()}}
+ F.sparks.forEach(s=>s.t+=dt);F.sparks=F.sparks.filter(s=>s.t<.3)}
+function bar(x,y,w,hp,right,name){ctx.fillStyle='#120814';ctx.fillRect(x-4,y-4,w+8,36);ctx.fillStyle='#e0473c';ctx.fillRect(x,y,w,28);ctx.fillStyle='#ffcf6b';const bw=w*hp/100;ctx.fillRect(right?x+w-bw:x,y,bw,28);ctx.fillStyle='#f4ead6';ctx.font='600 26px "Pixelify Sans",monospace';ctx.textAlign=right?'right':'left';ctx.fillText(name,right?x+w:x,y+62);ctx.textAlign='left'}
+function fightDraw(){ctx.save();if(F.shake>0)ctx.translate(rnd(-8,8),rnd(-6,6));ctx.drawImage(arena,0,0);
+ const{p1,p2}=F;[p1,p2].sort((a,b)=>(a.st==='ko')-(b.st==='ko')).reverse().forEach(f=>f.draw());
+ F.proj.forEach(p=>{const alexP=p.owner.key==='alex';ctx.save();ctx.translate(p.x,p.y);ctx.scale(p.dir,1);
+  if(alexP){for(let i=0;i<3;i++){ctx.strokeStyle=`rgba(255,${150+i*30},70,${.9-i*.25})`;ctx.lineWidth=10-i*2;ctx.beginPath();ctx.arc(-i*30,0,40+i*12,-1.1,1.1);ctx.stroke()}ctx.fillStyle='#fff';ctx.font='700 30px "Pixelify Sans",monospace';ctx.scale(p.dir,1);ctx.fillText('GRRR',-38,-50)}
+  else{for(let i=0;i<3;i++){ctx.strokeStyle=`rgba(127,214,255,${.9-i*.25})`;ctx.lineWidth=7;ctx.beginPath();ctx.arc(-i*26,0,20+i*16+Math.sin(NOW*20)*4,-1.2,1.2);ctx.stroke()}ctx.fillStyle='#b9c98a';ctx.fillRect(-14,-20,24,40);ctx.fillStyle='#24301a';ctx.fillRect(-10,-14,16,12);ctx.scale(p.dir,1);ctx.fillStyle='#fff';ctx.font='700 22px "Pixelify Sans",monospace';ctx.fillText('RING!',-30,-36)}ctx.restore()});
+ F.sparks.forEach(s=>{ctx.fillStyle=s.col;const r=20+s.t*160;for(let i=0;i<8;i++){const a=i*Math.PI/4;ctx.fillRect(s.x+Math.cos(a)*r-5,s.y+Math.sin(a)*r-5,10,10)}});
+ ctx.restore();
+ bar(60,40,620,p1.hp,false,NAME[p1.key]+' · TÚ');bar(920,40,620,p2.hp,true,NAME[p2.key]+' · CPU');
+ ctx.fillStyle='#120814';ctx.fillRect(740,28,120,72);ctx.fillStyle='#ffcf6b';ctx.font='700 52px "Pixelify Sans",monospace';ctx.textAlign='center';ctx.fillText(String(Math.max(0,Math.ceil(F.timer))).padStart(2,'0'),800,84);
+ ctx.font='600 18px "Pixelify Sans",monospace';ctx.fillStyle='#f4ead6';ctx.fillText('STREET PUMAS',800,124);
+ const cd=k=>{const f=F[k];return f.cool>0?'':'★ LISTO'};ctx.font='18px "Pixelify Sans",monospace';ctx.fillStyle='#4cc3b8';ctx.textAlign='left';ctx.fillText(cd('p1'),60,128);ctx.textAlign='right';ctx.fillText(cd('p2'),1540,128);
+ if(F.msg){ctx.textAlign='center';const sc=1+Math.max(0,.4-F.msgT)*1.5;ctx.save();ctx.translate(800,380);ctx.scale(sc,sc);ctx.font='700 130px "Pixelify Sans",monospace';ctx.fillStyle='#120814';ctx.fillText(F.msg,8,8);ctx.fillStyle='#e0473c';ctx.fillText(F.msg,4,4);ctx.fillStyle='#ffcf6b';ctx.fillText(F.msg,0,0);ctx.restore()}
+ ctx.textAlign='left'}
+function showResult(){const{p1,p2}=F;const w=p1.hp===p2.hp?null:(p1.hp>p2.hp?p1:p2);
+ $('#resTitle').textContent=w?`${NAME[w.key]} GANA`:'EMPATE';
+ const Q={alex:'Alex: «Los pumas no se aburren. Los pumas ganan.»',sergio:'Sergio: «Segu, has jugado como un puma. Dormido.»'};
+ $('#resQuip').textContent=w?Q[w.key]+(w===p1&&p1.hp===100?' ¡PERFECT!':''):'Sergio: «Esto es claramente un error de la IA.»';$('#result').hidden=false}
+$('#result').addEventListener('pointerdown',e=>e.stopPropagation());
+$('#again').onclick=()=>startFight();
+$('#pick').onclick=()=>{$('#result').hidden=true;openSelect()};
+$('#credits').onclick=()=>{$('#result').hidden=true;$('#resTitle').textContent='GRACIAS POR JUGAR';$('#resQuip').innerHTML='Tarde de Pumas · Guion: Alex y Claude · Arte: una IA que dibuja los dedos como puede<br>Ningún puma resultó herido durante el desarrollo de este juego.';$('#result').hidden=false};
+
+/* ---------- Bucle ---------- */
+let last=performance.now();
+function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;NOW=t/1000;
+ if(S.mode==='room'){alex.update(dt);sergio.update(dt);drawRoom();
+  if(!S.busy&&!D.res&&(HINTS[S.phase]||S.phase==='build')&&S.phase!=='calling'&&performance.now()-S.lastAct>45000){S.busy=true;giveHint().then(()=>S.busy=false)}}
+ else if(S.mode==='fight'){fightUpdate(dt);fightDraw()}
+ else if(S.mode==='fightsel'){if(arena)ctx.drawImage(arena,0,0);else drawRoom()}
+ requestAnimationFrame(loop)}
+
+/* ---------- Arranque y capítulos ---------- */
+$('#autoBtn').onclick=()=>{S.auto=!S.auto;$('#autoBtn').textContent='Auto: '+(S.auto?'sí':'no');$('#autoBtn').setAttribute('aria-pressed',S.auto)};
+$('#start').addEventListener('pointerdown',e=>e.stopPropagation());
+function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;$('#select').hidden=true;$('#result').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
+async function begin(ch){ac();reset();$('#start').hidden=true;
+ if(ch===1){intro();return}
+ if(ch===2){alex.x=1150;alex.y=640;alex.dir='down';addItem('movil');setPhase('calling');openPhone();return}
+ sergio.visible=true;alex.x=560;alex.y=630;alex.dir='left';sergio.x=330;sergio.y=632;sergio.dir='right';addItem('movil');
+ if(ch===3){setPhase('what_to_do');return}
+ S.consoleDead=true;if(ch===4){setPhase('inspiration');return}
+ S.owlBroken=true;S.haze=.25;if(ch===5){setPhase('build');return}
+ S.mode='fightsel';$('#hud').hidden=true;$('#hintBtn').hidden=true;buildArena();openSelect()}
+$('#play').onclick=()=>begin(1);
+document.querySelectorAll('#chap button').forEach(b=>b.onclick=()=>begin(+b.dataset.c));
+Promise.all([loadImg('room','assets/room.jpg'),loadImg('alex','assets/alex_atlas.png'),loadImg('sergio','assets/sergio_atlas.png')]).then(()=>{(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>requestAnimationFrame(loop))});
+</script>
