@@ -6375,8 +6375,17 @@ const TRACKS = [
   { name: 'Chiringuito', bpm: 132, root: 48, prog: [0, 3, 6, 2], lead: [4, 2, 0, 2, 4, 4, 7, 4], drums: 'bounce' },
   { name: 'Plaza', bpm: 156, root: 43, prog: [0, 6, 5, 4], lead: [0, 4, 7, 4, 9, 7, 4, 2], drums: 'drive' },
   { name: 'Parque', bpm: 124, root: 47, prog: [0, 2, 5, 4], lead: [7, 4, 2, 0, 2, 4, 2, -1], drums: 'bounce' },
-  { name: 'Menú', bpm: 110, root: 50, prog: [0, 5, 3, 4], lead: [0, -1, 0, 4, 2, 0, -3, -1], drums: 'menu' },
-  { name: 'Selección', bpm: 140, root: 46, prog: [0, 0, 5, 6], lead: [0, 2, 4, 7, 4, 2, 4, 9], drums: 'drive' },
+  // 4 · MENÚ — "Puma al atardecer": synth suave de medio tiempo, pad cálido y melodía larga
+  { name: 'Puma al atardecer', bpm: 100, root: 45, scale: 'minor', prog: [0, 5, 2, 6], drums: 'title', swing: 0.05,
+    bass: { wave: 'triangle', pat: 'x...x.o.x...x.o.', cutoff: 900, vol: 0.18 },
+    pad: { wave: 'triangle', vol: 0.02, oct: 0 },
+    arp: { wave: 'square', pat: '0.1.2.3.2.1.2.3.', vol: 0.022, oct: 2, cutoff: 2200 },
+    lead: [4, 4, 2, 4, 7, 6, 4, 2, 0, 2, 4, 2, 0, -1, 0, 0], leadEvery: 4, leadBars: 'all', leadWave: 'square', leadVol: 0.042, vibrato: 5, leadCutoff: 2600 },
+  // 5 · SELECCIÓN — "¡Elige tu puma!": mixolidio con chispa, arpegio rápido y gancho de recreativa
+  { name: '¡Elige tu puma!', bpm: 138, root: 47, scale: 'mixolydian', prog: [0, 6, 3, 4], drums: 'drive',
+    bass: { wave: 'square', pat: 'x.o.x.5.x.o.x.5.', cutoff: 1000, vol: 0.13 },
+    arp: { wave: 'sawtooth', pat: '0123210301232103', vol: 0.02, oct: 2, cutoff: 2800 },
+    lead: [0, 2, 4, 7, 9, 7, 4, 2, 4, 7, 9, 11, 9, 7, 4, 7], leadEvery: 2, leadBars: 'odd', leadWave: 'square', leadVol: 0.045, vibrato: 6 },
 
   // 6 · L'ATENEU — rumba catalana de festa major: cadencia andaluza, "ventilador" de guitarra y palmas
   { name: "Rumba de l'Ateneu", bpm: 116, root: 52, scale: 'phrygianDom', prog: [3, 2, 1, 0], drums: 'rumba', swing: 0.08,
@@ -6436,6 +6445,7 @@ const DRUMS = {
   drive: { k: 'x...x...x...x.x.', s: '....x.......x...', h: 'x.x.x.x.x.x.x.xx' },
   bounce: { k: 'x.....x.x.......', s: '....x.......x..x', h: '..x...x...x...x.' },
   menu: { k: 'x.......x.......', s: '........x.......', h: 'x...x...x...x...' },
+  title: { k: 'x.......x..x....', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', o: '......x.......x.' },
   rumba: { k: 'x.....x.x.....x.', c: '..x..x....x..x..', h: 'xxxxxxxxxxxxxxxx', t: '....x.......x...' },
   folk: { m: 'x..x..x.x..x..x.', t: '..x...x...x...x.', k: 'x.......x.......' },
   epic: { k: 'x.x...x.x.x...x.', s: '....x.......x...', m: '..............xx', h: 'x...x...x...x...', o: '............x...' },

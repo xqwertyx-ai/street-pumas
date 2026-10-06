@@ -139,6 +139,7 @@ body{background:var(--ink);color:var(--text);font-family:var(--body);padding-inl
 <div class="foot" id="foot">
   <span id="footTx">Versión con subtítulos · las voces llegarán más adelante</span>
   <button id="autoBtn" aria-pressed="true">Auto: sí</button>
+  <button id="musicBtn" aria-pressed="true">Música: sí</button>
 </div>
 
 <script>
@@ -198,6 +199,51 @@ const SFX={
  blip(f){tone(f,.035,{type:'square',vol:.018})}
 };
 
+/* ---------- Música (secuenciador chiptune, mismo estilo que Street Pumas) ---------- */
+const mtof=m=>440*Math.pow(2,(m-69)/12);
+const SCALES={minor:[0,2,3,5,7,8,10],major:[0,2,4,5,7,9,11],dorian:[0,2,3,5,7,9,10],mixolydian:[0,2,4,5,7,9,10]};
+const deg=(sc,d)=>{const o=Math.floor(d/7);return sc[((d%7)+7)%7]+12*o};
+const DRUMS={
+ cozy:{k:'x.........x.....',s:'........x.......',h:'..x...x...x...x.'},
+ onedrop:{k:'........x.......',s:'........x.......',h:'..x...x...x...x.',o:'..............x.'},
+};
+const TRACKS={
+ // Tema de la habitación: lo-fi suave, Fa mayor, pad cálido y una melodía tranquila
+ room:{bpm:84,root:53,scale:'major',prog:[0,3,5,4],drums:'cozy',swing:0.12,
+  bass:{wave:'triangle',pat:'x.....x.x.......',cutoff:800,vol:0.17,len:3},
+  pad:{wave:'triangle',vol:0.018},
+  arp:{wave:'sine',pat:'0...1...2...1...',vol:0.03,oct:2},
+  lead:[4,.5,2,4,7,.5,4,2,0,.5,2,4,2,.5,0,-1],leadEvery:4,leadBars:'all',leadWave:'triangle',leadVol:0.045,vibrato:4},
+ // Inspiración: one drop reggae, Sol menor, skank a contratiempo y melódica
+ reggae:{bpm:74,root:43,scale:'minor',prog:[0,0,3,4],drums:'onedrop',swing:0.1,
+  bass:{wave:'sine',pat:'x..x....x.5.o...',cutoff:0,vol:0.32,len:2.6},
+  skank:'....x.......x...',
+  lead:[4,.5,4,2,0,.5,2,4,7,.5,6,4,2,.5,0,.5],leadEvery:4,leadBars:'all',leadWave:'triangle',leadVol:0.05,vibrato:6},
+};
+const MUSIC={ac:null,out:null,tr:null,name:null,step:0,next:0,timer:null,on:true,vol:0.32,
+ ensure(){const a=ac();if(!a)return false;if(!this.out){this.out=a.createGain();const c=a.createDynamicsCompressor();this.out.connect(c);c.connect(a.destination);this.out.gain.value=this.on?this.vol:0}this.ac=a;return true},
+ play(name){if(!this.ensure()||this.name===name)return;this.stop();this.name=name;this.tr=TRACKS[name];this.step=0;this.next=this.ac.currentTime+0.1;this.timer=setInterval(()=>this.sched(),40)},
+ stop(){if(this.timer)clearInterval(this.timer);this.timer=null;this.tr=null;this.name=null},
+ fadeTo(name){if(!this.ensure())return;const g=this.out.gain,t=this.ac.currentTime;g.cancelScheduledValues(t);g.setValueAtTime(g.value,t);g.linearRampToValueAtTime(0.0001,t+0.6);setTimeout(()=>{this.play(name);this.level()},650)},
+ level(duck){if(!this.out)return;const g=this.out.gain,t=this.ac.currentTime,v=this.on?(duck?this.vol*0.45:this.vol):0;g.cancelScheduledValues(t);g.setValueAtTime(g.value,t);g.linearRampToValueAtTime(v,t+0.25)},
+ sched(){const tr=this.tr;if(!tr)return;const sd=60/tr.bpm/4;while(this.next<this.ac.currentTime+0.2){const sw=this.step%2?(tr.swing||0)*sd:0;this.stepAt(tr,this.step,this.next+sw,sd);this.next+=sd;this.step=(this.step+1)%128}},
+ note(type,f,t,dur,vol,cut,o={}){const a=this.ac,os=a.createOscillator();os.type=type;os.frequency.value=f;
+  if(o.vib){const l=a.createOscillator(),lg=a.createGain();l.frequency.value=o.vib;lg.gain.value=f*0.01;l.connect(lg);lg.connect(os.frequency);l.start(t);l.stop(t+dur+0.05)}
+  const g=a.createGain(),atk=o.atk||0.01;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+atk);if(o.sus)g.gain.setValueAtTime(vol,t+dur*0.7);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  if(cut){const fl=a.createBiquadFilter();fl.type='lowpass';fl.frequency.value=cut;fl.Q.value=2;os.connect(fl);fl.connect(g)}else os.connect(g);g.connect(this.out);os.start(t);os.stop(t+dur+0.03)},
+ drum(k,t){const a=this.ac;if(k==='k'){const o=a.createOscillator(),g=a.createGain();o.frequency.setValueAtTime(140,t);o.frequency.exponentialRampToValueAtTime(42,t+0.12);g.gain.setValueAtTime(0.55,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.2);o.connect(g);g.connect(this.out);o.start(t);o.stop(t+0.25);return}
+  const P={s:[0.12,'bandpass',1900,0.22],h:[0.035,'highpass',7000,0.07],o:[0.2,'highpass',6000,0.06]}[k];if(!P)return;
+  if(!this.nb)this.nb={};if(!this.nb[k]){const b=a.createBuffer(1,Math.ceil(a.sampleRate*P[0]),a.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*(1-i/d.length);this.nb[k]=b}
+  const src=a.createBufferSource();src.buffer=this.nb[k];const f=a.createBiquadFilter();f.type=P[1];f.frequency.value=P[2];const g=a.createGain();g.gain.value=P[3];src.connect(f);f.connect(g);g.connect(this.out);src.start(t)},
+ stepAt(tr,step,t,sd){const sc=SCALES[tr.scale],barN=Math.floor(step/16),bar=barN%tr.prog.length,s=step%16,ch=tr.prog[bar],dr=DRUMS[tr.drums];
+  for(const k in dr)if(dr[k][s]==='x')this.drum(k,t);
+  const b=tr.bass,c=b.pat[s];if(c!=='.'){const n=tr.root+deg(sc,ch)+(c==='o'?12:c==='5'?7:0);this.note(b.wave,mtof(n-12),t,sd*(b.len||1.8),b.vol,b.cutoff)}
+  if(tr.pad&&s===0)for(const tt of [0,2,4])this.note(tr.pad.wave,mtof(tr.root+12+deg(sc,ch+tt)),t,sd*16,tr.pad.vol,1500,{atk:0.3,sus:true});
+  if(tr.skank&&tr.skank[s]==='x')for(const tt of [0,2,4])this.note('square',mtof(tr.root+12+deg(sc,ch+tt)),t,sd*0.9,0.025,1800);
+  if(tr.arp&&tr.arp.pat[s]!=='.'){const tones=[0,2,4,7];this.note(tr.arp.wave,mtof(tr.root+12*tr.arp.oct+deg(sc,ch+tones[+tr.arp.pat[s]])),t,sd*3,tr.arp.vol,2400)}
+  const ev=tr.leadEvery||4;if((tr.leadBars==='all'||barN%2===1)&&s%ev===0){const ln=tr.lead[(s/ev+bar*16/ev)%tr.lead.length];if(ln%1===0)this.note(tr.leadWave,mtof(tr.root+24+deg(sc,ch+ln)),t,sd*ev*0.85,tr.leadVol,2800,{vib:tr.vibrato,atk:0.03})}}
+};
+
 /* ---------- Personajes que hablan ---------- */
 const SPK={
  alex:{name:'Alex',color:'#ffcf6b',face:'alex',pitch:210},
@@ -255,7 +301,7 @@ function say(who,text,mood,opts={}){
   D.res=res;D.full=text;D.i=0;D.done=false;
   const pf=$('#dlgPf');pf.style.background=sp.bg||'';pf.innerHTML=sp.face?`<img src="${faceSrc(sp.face,mood)}" alt="">`:`<span class="tag">${sp.tag}</span>`;
   $('#dlgNm').textContent=sp.name+(sp.phone?' · al teléfono':'');$('#dlgNm').style.color=sp.color;$('#dlgLn').textContent='';$('#dlg').hidden=false;
-  D.audio=null;if(file){try{D.audio=new Audio('voces/'+file);D.audio.onended=()=>{D.audio=null;if(D.done)finishLine();else D.ended=true};D.audio.play().catch(()=>{D.audio=null})}catch(e){D.audio=null}}
+  D.audio=null;if(file){try{D.audio=new Audio('voces/'+file);MUSIC.level(true);D.audio.onended=()=>{D.audio=null;if(D.done)finishLine();else D.ended=true};D.audio.play().catch(()=>{D.audio=null})}catch(e){D.audio=null}}
   D.ended=false;
   if(text.length>110){const segs=splitSegs(text),total=(opts.secs||text.length/14)*1000;let i=0;D.done=true;$('#dlgLn').textContent=segs[0];
    const step=()=>{if(D.res!==res)return;i++;if(i<segs.length){$('#dlgLn').textContent=segs[i];D.segTimer=setTimeout(step,total*segs[i].length/text.length)}else if(!D.audio&&S.auto)D.timer=setTimeout(finishLine,1200)};
@@ -265,7 +311,7 @@ function say(who,text,mood,opts={}){
  })}
 function splitSegs(t){const parts=t.match(/[^.!?…]+[.!?…]*\s*/g)||[t],out=[];let cur='';for(const p of parts){if((cur+p).length>105&&cur){out.push(cur.trim());cur=''}cur+=p}if(cur.trim())out.push(cur.trim());return out}
 function typed(){clearInterval(D.typer);D.done=true;$('#dlgLn').textContent=D.full;if(D.ended){finishLine();return}if(D.audio)return;if(S.auto)D.timer=setTimeout(finishLine,1100+D.full.length*42)}
-function finishLine(){clearTimeout(D.timer);clearTimeout(D.segTimer);clearInterval(D.typer);if(D.audio){D.audio.pause();D.audio=null}$('#dlg').hidden=true;const r=D.res;D.res=null;r&&r()}
+function finishLine(){MUSIC.level(false);clearTimeout(D.timer);clearTimeout(D.segTimer);clearInterval(D.typer);if(D.audio){D.audio.pause();D.audio=null}$('#dlg').hidden=true;const r=D.res;D.res=null;r&&r()}
 function advance(){if(!D.res)return false;if(!D.done)typed();else finishLine();return true}
 $('#dlg').addEventListener('pointerdown',e=>{e.stopPropagation();advance()});
 async function talk(lines){for(const l of lines)await say(...l)}
@@ -419,13 +465,15 @@ const HANDLERS={
  }
 };
 
+const SCREW_FAIL=['No todo en la vida se arregla con un destornillador. Casi todo, pero esto no.','Esto no tiene tornillos. Lo he mirado bien.','Si desatornillo eso, mi madre me desatornilla a mí.'];
+const ITEM_FAIL=['Eso no tiene ningún sentido. Ni en una aventura gráfica.','No. Así no. Prueba otra cosa.'];
 async function interact(h){
  const item=S.sel;S.sel=null;renderInv();S.lastAct=performance.now();
  if(h.id==='lampara'&&!S.lampUsed){await lampScene();return}
  if(h.id==='missi'){await missi();return}
  const set=HANDLERS[S.phase]||{};
  if(set[h.id]){const r=await set[h.id](item);if(r===true)return;if(S.phase!=='build')await miss();return}
- if(item){await say('alex',`Usar ${ITEMS[item].toLowerCase()} con ${h.n.toLowerCase()} no tiene ningún sentido. Ni en una aventura gráfica.`,'confused');return}
+ if(item){const L=item==='destornillador'?SCREW_FAIL:ITEM_FAIL;await say('alex',L[(S.failI=(S.failI||0)+1)%L.length],'confused');return}
  if(S.phase==='inspiration'&&Math.random()<.35){await say('sergio','Inspiración, Seguuu. Céntrate.');await miss();return}
  await look(h);await miss();
 }
@@ -476,8 +524,10 @@ $('#phClose').onclick=()=>{if(!calling)closePhone()};
 async function callLine(who,text){await say(who,text)}
 function hang(){SFX.hang();$('#phCall').innerHTML='<b>Llamada finalizada</b>'}
 async function sms(from,text){SFX.sms();const s=$('#phSms');s.innerHTML=`<b>${from}:</b> ${text}`;s.hidden=false;await sleep(1700)}
+const SERGIO_LATER=['Nah, Sergio seguro que está haciendo los deberes. Lo dejo como último recurso.','¿Sergio? No, no. A Sergio se le llama cuando ya no queda nadie. Es el protocolo.','Sergio es mi comodín de la llamada. Todavía no lo gasto.'];
 async function dial(c){
- if(calling||S.phase!=='calling')return;calling=true;S.lastAct=performance.now();
+ if(calling||S.phase!=='calling')return;
+ if(c.id==='sergio'&&CONTACTS.some(x=>x.id!=='sergio'&&!x.status)){calling=true;await say('alex',SERGIO_LATER[(S.sergioTry=(S.sergioTry||0)+1)%3],'smile');calling=false;return}calling=true;S.lastAct=performance.now();
  $('#phList').hidden=true;$('#phSms').hidden=true;$('#phTitle').textContent='Llamando';const pc=$('#phCall');pc.hidden=false;pc.innerHTML=`<span>Llamando a</span><b>${c.name}</b><span>· · ·</span>`;
  SFX.dial();await sleep(600);const rings=c.id==='sergio'?3:c.id==='skater'&&c.status?1:2;for(let i=0;i<rings;i++){SFX.ring();await sleep(1250)}
  if(!(c.id==='skater'&&c.status)){pc.innerHTML=`<span>En llamada</span><b>${c.name}</b><span>00:0${1+Math.floor(Math.random()*8)}</span>`}
@@ -538,12 +588,13 @@ async function smokeScene(){
  S.busy=true;
  await talk([['alex','Inspiración de emergencia.','smile'],['sergio','Josep se lo pierde.','laugh']]);
  await play(alex,'interact',800);
+ MUSIC.fadeTo('reggae');
  for(let i=0;i<=40;i++){S.haze=i/40;await sleep(40)}
  cv.style.filter='saturate(1.7) hue-rotate(25deg) contrast(1.05)';
  await talk([['sergio','¿Notas algo?'],['alex','Noto que el póster me está mirando.','confused'],['sergio','El póster siempre te ha mirado, Seguuu.'],['alex','…','confused']]);
  S.bulb=1;SFX.bulb();await sleep(900);
  await talk([['alex','¡Ya lo tengo! ¡Vamos a construir un ordenador!','laugh'],['sergio','Pero si no tenemos ni idea.','confused'],['alex','Eso no ha frenado nunca a nadie en internet.'],['sergio','Vale. Necesitamos placa base, memoria, procesador y una caja.'],['alex','Y un destornillador. Que yo con las uñas no abro ni un yogur.']]);
- S.bulb=0;cv.style.filter='';for(let i=40;i>=10;i--){S.haze=i/40;await sleep(30)}
+ S.bulb=0;cv.style.filter='';MUSIC.fadeTo('room');for(let i=40;i>=10;i--){S.haze=i/40;await sleep(30)}
  setPhase('build');S.busy=false;
 }
 async function ending(){
@@ -616,7 +667,7 @@ function drawRoom(){
 
 /* ---------- Street Pumas (el juego de verdad) ---------- */
 const SP_URL=new URL('../',location.href).href;
-function goStreetPumas(){$('#card').hidden=false;$('#cardTx').textContent='STREET PUMAS';setTimeout(()=>{location.href=SP_URL},700)}
+function goStreetPumas(){MUSIC.fadeTo(null);$('#card').hidden=false;$('#cardTx').textContent='STREET PUMAS';setTimeout(()=>{location.href=SP_URL},700)}
 
 /* ---------- Bucle ---------- */
 let last=performance.now();
@@ -626,10 +677,11 @@ function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;NOW=t/1000;
  requestAnimationFrame(loop)}
 
 /* ---------- Arranque y capítulos ---------- */
+$('#musicBtn').onclick=()=>{MUSIC.on=!MUSIC.on;$('#musicBtn').textContent='Música: '+(MUSIC.on?'sí':'no');$('#musicBtn').setAttribute('aria-pressed',MUSIC.on);MUSIC.ensure()&&MUSIC.level(false)};
 $('#autoBtn').onclick=()=>{S.auto=!S.auto;$('#autoBtn').textContent='Auto: '+(S.auto?'sí':'no');$('#autoBtn').setAttribute('aria-pressed',S.auto)};
 $('#start').addEventListener('pointerdown',e=>e.stopPropagation());
 function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false,smokeOff:false,fridgeOpen:0,lampUsed:false,cat:false,dark:0,catTalk:0});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
-async function begin(ch){ac();reset();$('#start').hidden=true;
+async function begin(ch){ac();reset();$('#start').hidden=true;MUSIC.play('room');MUSIC.level(false);
  if(ch===1){intro();return}
  if(ch===2){alex.x=1150;alex.y=640;alex.dir='down';addItem('movil');setPhase('calling');openPhone();return}
  sergio.visible=true;alex.x=560;alex.y=630;alex.dir='left';sergio.x=330;sergio.y=632;sergio.dir='right';addItem('movil');
