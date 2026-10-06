@@ -205,7 +205,7 @@ const SPK={
  sys:{name:'Operadora',color:'#b9c98a',tag:'☎',bg:'#b9c98a',pitch:300},
 };
 const CONTACTS=[
- ['aaron','Aaron','#f29f6b'],['agui','Agui','#c99bff'],['aida','Aida','#ff8fb1'],['aitor','Aitor','#8fd18b'],
+ ['aaron','Aaron','#f29f6b'],['agui','Agui','#c99bff'],['aida','Aida','#ff8fb1'],['aitor','Aitor','#8fd18b'],['asen','Asen','#ff9f43'],
  ['andrea','Andrea','#ffd36b'],['guevara','Guevara','#ff6b6b'],['guillem','Guillem','#6bd3ff'],['idoia','Idoia','#f7b267'],
  ['josep','Josep','#9be0c9'],['ruiz','Ruiz','#d8c27a'],['sara','Sara','#ffa3d1'],['sergio','Sergio','#7fd6ff'],['skater','Skater','#b8e05c']
 ].map(([id,name,color])=>({id,name,color,status:''}));
@@ -255,11 +255,16 @@ function say(who,text,mood,opts={}){
   const pf=$('#dlgPf');pf.style.background=sp.bg||'';pf.innerHTML=sp.face?`<img src="${faceSrc(sp.face,mood)}" alt="">`:`<span class="tag">${sp.tag}</span>`;
   $('#dlgNm').textContent=sp.name+(sp.phone?' · al teléfono':'');$('#dlgNm').style.color=sp.color;$('#dlgLn').textContent='';$('#dlg').hidden=false;
   D.audio=null;if(file){try{D.audio=new Audio('voces/'+file);D.audio.onended=()=>{D.audio=null;if(D.done)finishLine();else D.ended=true};D.audio.play().catch(()=>{D.audio=null})}catch(e){D.audio=null}}
-  D.ended=false;const speed=D.audio?Math.max(26,Math.min(90,(opts.secs||3)*1000/text.length)):26;
+  D.ended=false;
+  if(text.length>110){const segs=splitSegs(text),total=(opts.secs||text.length/14)*1000;let i=0;D.done=true;$('#dlgLn').textContent=segs[0];
+   const step=()=>{if(D.res!==res)return;i++;if(i<segs.length){$('#dlgLn').textContent=segs[i];D.segTimer=setTimeout(step,total*segs[i].length/text.length)}else if(!D.audio&&S.auto)D.timer=setTimeout(finishLine,1200)};
+   D.segTimer=setTimeout(step,total*segs[0].length/text.length);return}
+  const speed=D.audio?Math.max(26,Math.min(90,(opts.secs||3)*1000/text.length)):26;
   D.typer=setInterval(()=>{D.i++;$('#dlgLn').textContent=D.full.slice(0,D.i);if(!D.audio&&D.i%2&&/\w/.test(D.full[D.i-1]||''))SFX.blip(sp.pitch+rnd(-25,25));if(D.i>=D.full.length)typed()},speed);
  })}
+function splitSegs(t){const parts=t.match(/[^.!?…]+[.!?…]*\s*/g)||[t],out=[];let cur='';for(const p of parts){if((cur+p).length>105&&cur){out.push(cur.trim());cur=''}cur+=p}if(cur.trim())out.push(cur.trim());return out}
 function typed(){clearInterval(D.typer);D.done=true;$('#dlgLn').textContent=D.full;if(D.ended){finishLine();return}if(D.audio)return;if(S.auto)D.timer=setTimeout(finishLine,1100+D.full.length*42)}
-function finishLine(){clearTimeout(D.timer);clearInterval(D.typer);if(D.audio){D.audio.pause();D.audio=null}$('#dlg').hidden=true;const r=D.res;D.res=null;r&&r()}
+function finishLine(){clearTimeout(D.timer);clearTimeout(D.segTimer);clearInterval(D.typer);if(D.audio){D.audio.pause();D.audio=null}$('#dlg').hidden=true;const r=D.res;D.res=null;r&&r()}
 function advance(){if(!D.res)return false;if(!D.done)typed();else finishLine();return true}
 $('#dlg').addEventListener('pointerdown',e=>{e.stopPropagation();advance()});
 async function talk(lines){for(const l of lines)await say(...l)}
@@ -270,7 +275,7 @@ async function closeup(who,mood,cap,ms=1700){$('#closeImg').src=faceSrc(who,mood
 
 /* ---------- Hotspots ---------- */
 const HS=[
- {id:'cama',n:'Cama',r:[1010,652,590,148],w:[1150,640],d:'down'},
+ {id:'cama',n:'Cama',r:[1010,652,590,148],w:[990,690],d:'right'},
  {id:'tv',n:'Tele',r:[1185,338,215,132],w:[1280,622],d:'up'},
  {id:'consola',n:'Consola',r:[1158,498,195,82],w:[1255,626],d:'up'},
  {id:'mando',n:'Mando de la tele',r:[245,700,80,62],w:[300,632],d:'down'},
@@ -347,7 +352,7 @@ $('#hintBtn').addEventListener('pointerdown',async e=>{e.stopPropagation();if(S.
 /* ---------- Interacciones por fase ---------- */
 const HANDLERS={
  find_phone:{
-  async cama(){await play(alex,'pickup',900);SFX.pick();await say('alex','¡Ajá! Entre las sábanas, junto a tres patatas fritas y una moneda de veinte duros.','laugh');await say('alex','Esto ya no es buscar, es arqueología.');addItem('movil');setPhase('calling');openPhone();return true}
+  async cama(){await play(alex,'interact',900);SFX.pick();await say('alex','¡Ajá! Entre las sábanas, junto a tres patatas fritas y una moneda de veinte duros.','laugh');await say('alex','Esto ya no es buscar, es arqueología.');addItem('movil');setPhase('calling');openPhone();return true}
  },
  what_to_do:{
   async tv(){await talk([['alex','¿Y si vemos la tele?'],['sergio','¿Más pumas? Ya sé todo lo que hay que saber de pumas. Y no quiero saber más.','confused']])},
@@ -383,8 +388,8 @@ const HANDLERS={
    if(has('placa')||S.pcBuilt){await say('alex','Ya no le queda nada útil. Ni dignidad.');return}
    if(!has('destornillador')){await talk([['alex','Para sacarle las tripas a la consola necesito algo para desatornillar.'],['sergio','Y no, a mordiscos no vale.']]);return}
    if(item!=='destornillador'){await say('alex','Esto se abre con el destornillador. Selecciónalo y úsalo aquí.');return}
-   await play(alex,'interact',1200);SFX.screw();await sleep(300);
-   await say('alex','Placa base fuera. Tranquila, tu sacrificio no será en vano.');addItem('placa');renderObj()},
+   await play(alex,'interact',1200);SFX.screw();S.smokeOff=true;await sleep(300);
+   await say('alex','Placa base fuera. Por fin ha dejado de echar humo. Tranquila, tu sacrificio no será en vano.');addItem('placa');renderObj()},
   async mac(item){
    if(has('procesador')||S.pcBuilt){await say('alex','Ya le he quitado el procesador. Ahora es un Mac de decoración. Como los de las tiendas.');return}
    if(!has('destornillador')){await say('alex','Pide contraseña. Y la contraseña es "contraseña"… No, tampoco. Mejor lo abro por dentro.');return}
@@ -396,7 +401,7 @@ const HANDLERS={
    if(S.pcBuilt){
     if(item==='cd'||(has('cd')&&!item)){await ending();return}
     await say('alex','Ahí lo tienes. Un ordenador refrigerado de serie. Le falta un juego.');return}
-   if(!has('ram')&&!S.gotBox){await play(alex,'pickup',900);SFX.pick();await talk([['alex','Una memoria RAM. En la nevera.','confused'],['sergio','Para que no se caliente.'],['alex','Tiene sentido. Y vacía, la neverita es una torre perfecta.','smile']]);addItem('ram');S.gotBox=true;renderObj();return}
+   if(!has('ram')&&!S.gotBox){alex.dir='up';S.fridgeOpen=1;SFX.click();await sleep(700);SFX.pick();S.fridgeOpen=0;await talk([['alex','Una memoria RAM. En la nevera.','confused'],['sergio','Para que no se caliente.'],['alex','Tiene sentido. Y vacía, la neverita es una torre perfecta.','smile']]);addItem('ram');S.gotBox=true;renderObj();return}
    if(['placa','ram','procesador'].every(has)){
     await say('alex','Placa, RAM, procesador y caja. Vamos a ello.');
     await play(alex,'interact',1500);SFX.screw();await sleep(500);SFX.screw();
@@ -428,12 +433,13 @@ const CALLS={
   await callLine('skater','¡Claro, tío! Voy ahora mismo.');hang();await sleep(900);
   await sms('Skater','Al final no puedo, tío. Lo siento.');await say('alex','Clásico Skater.','smile');return 'no'},
  josep:async()=>{await callLine('josep','Sorry, tío. Ya no fumo.');hang();await sleep(400);await closeup('alex','laugh','*guiño guiño*',1900);return 'no'},
- aida:async()=>{await say('aida','[Pendiente: transcripción del audio de Aida]',null,{audio:'aida.mp3',secs:11});hang();return 'no'},
- ruiz:async()=>{await say('ruiz','[Pendiente: transcripción del audio de Ruiz]',null,{audio:'ruiz.mp3',secs:19});hang();return 'no'},
+ aida:async()=>{await say('aida','¡Hola, Seg! ¿Cómo estás? ¿Quieres que hagamos algo hoy? Tengo una idea buenísima: podemos pillar ceras de colores, y pinceles, y acuarelas, y rotuladores, y…',null,{audio:'aida.mp3',secs:11});await say('alex','Aida… Aida, te llamo otro día, que esto va para largo.','smile');hang();await say('alex','Cuando acabe la lista de material ya será Navidad.');return 'no'},
+ ruiz:async()=>{await say('ruiz','Hola, Seguuu! Quina il·lusió que em truquis! Tinc moltes ganes de veure\'t i arreplegar-te. Avui? Oh, buah, estic molt liada! Ara a les cinc tinc pàdel, i quan acabi he quedat amb la Maria i la Lara, que fa temps que no les veig, i després vaig al cumple del Joanko. Però si el partit acaba d\'hora puc passar a veure\'t dos minuts i mig.',null,{audio:'ruiz.mp3',secs:19.5});hang();await say('alex','Dos minutos y medio. Lo apunto como un «quizás» muy optimista.','confused');return 'no'},
  guillem:async()=>{await callLine('guillem','No puedo, me voy al gym.');await say('alex','¿Otra vez? Si fuiste ayer.');await callLine('guillem','Y mañana también. Hoy toca pierna.');hang();await say('alex','Guillem no se ha saltado nunca un día de pierna. Los planes conmigo, todos.');return 'no'},
  guevara:async()=>{await callLine('guevara','¡Imposible! Me voy a La Bisbal d\'Empordà, que tocan los Punkarracats.');await say('alex','¿Un martes?','confused');await callLine('guevara','El punk no entiende de calendarios.');hang();return 'no'},
  sara:async()=>{await callLine('sara','No puedo, estoy con el Nil.');await say('alex','Vale. Saluda al Nil.');await callLine('sara','Dice el Nil que hola.');hang();return 'no'},
  aaron:async()=>{await callLine('aaron','Tío, acabo de salir a dar una vuelta con la bici.');await say('alex','¿Y por dónde andas?');await callLine('aaron','Volviendo de Zaragoza.');await say('alex','Una vuelta. A Zaragoza.','confused');await callLine('aaron','Cortita, para calentar.');hang();return 'no'},
+ asen:async()=>{await callLine('asen','Buah tio, no puc, que ens estan fent un setge a la casa okupa i estem en mode resistència.');await say('alex','¿Necesitáis refuerzos? Tengo un mando de la Play y toda la tarde libre.');await callLine('asen','El que necessitem és que pengis, que aquest mòbil és el router de tota la casa.');hang();await say('alex','Resistid, compañeros. Yo resistiré desde el sofá.','smile');return 'no'},
  aitor:async()=>{await callLine('aitor','Uf, he quedado con el Nate y esos.');await say('alex','¿Y quiénes son "esos"?');await callLine('aitor','Pues esos.');hang();await say('alex','Ah, esos.');return 'no'},
  agui:async()=>{await callLine('agui','Ahora no puedo. Estoy en Hogwarts, en un congreso de magia.');await say('alex','¿Y hay cobertura en Hogwarts?','confused');await callLine('agui','No. Te estoy contestando por lechuza.');hang();await say('alex','…Ese búho de la estantería me está mirando raro.');return 'no'},
  andrea:async()=>{await callLine('andrea','¿Tú estás tonto? Sabes que estoy en California.');await say('alex','Ya, pero por si acaso.');hang();await say('alex','Ni con nueve horas de diferencia me dicen que sí.');return 'no'},
@@ -566,7 +572,8 @@ function drawRoom(){
  drawTV();
  if(S.owlBroken){ctx.fillStyle='rgb(14,82,91)';ctx.fillRect(858,190,64,76);ctx.fillStyle='#7a4a24';[[864,262,9,6],[880,264,7,4],[896,261,10,7],[910,264,6,4]].forEach(r=>ctx.fillRect(...r));ctx.fillStyle='#e0b070';ctx.fillRect(887,258,6,6)}
  if(S.consoleOn){ctx.fillStyle=`rgba(127,214,255,${.25+.2*Math.sin(NOW*10)})`;ctx.fillRect(1262,505,90,40)}
- if(S.consoleDead&&Math.random()<(S.phase==='inspiration'||S.phase==='what_to_do'?.5:.12))smoke.push({x:1300+rnd(-20,20),y:510,vx:rnd(-8,8),vy:rnd(-40,-25),r:rnd(6,12),t:0});
+ if(S.consoleDead&&!S.smokeOff&&Math.random()<(S.phase==='inspiration'||S.phase==='what_to_do'?.5:.12))smoke.push({x:1300+rnd(-20,20),y:510,vx:rnd(-8,8),vy:rnd(-40,-25),r:rnd(6,12),t:0});
+ if(S.fridgeOpen){ctx.fillStyle='#1b2a30';ctx.fillRect(548,455,90,110);ctx.fillStyle='rgba(230,245,255,.85)';ctx.fillRect(556,463,74,94);ctx.fillStyle='#4cc3ff';ctx.fillRect(570,505,46,8);ctx.fillStyle='#c8d6dc';ctx.fillRect(520,452,30,116)}
  if(S.pcBuilt){const c=['#ff4d6d','#ffd166','#06d6a0','#4cc3ff','#c77dff'];for(let i=0;i<5;i++){ctx.fillStyle=c[(i+Math.floor(NOW*4))%5];ctx.fillRect(552+i*17,556,10,6)}ctx.fillStyle=`hsla(${NOW*90%360},90%,60%,.22)`;ctx.fillRect(545,450,97,118);ctx.fillStyle='rgba(76,195,255,.15)';ctx.fillRect(525,560,140,40)}
  const actors=[alex,sergio].sort((a,b)=>a.y-b.y);actors.forEach(a=>a.draw());
  for(let i=smoke.length-1;i>=0;i--){const p=smoke[i];p.t+=1/60;p.x+=p.vx/60;p.y+=p.vy/60;p.r+=.25;const a=Math.max(0,.45-p.t*.18);if(a<=0){smoke.splice(i,1);continue}ctx.fillStyle=`rgba(190,190,190,${a})`;ctx.fillRect(p.x-p.r,p.y-p.r,p.r*2,p.r*2)}
@@ -588,7 +595,7 @@ function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;NOW=t/1000;
 /* ---------- Arranque y capítulos ---------- */
 $('#autoBtn').onclick=()=>{S.auto=!S.auto;$('#autoBtn').textContent='Auto: '+(S.auto?'sí':'no');$('#autoBtn').setAttribute('aria-pressed',S.auto)};
 $('#start').addEventListener('pointerdown',e=>e.stopPropagation());
-function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
+function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false,smokeOff:false,fridgeOpen:0});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
 async function begin(ch){ac();reset();$('#start').hidden=true;
  if(ch===1){intro();return}
  if(ch===2){alex.x=1150;alex.y=640;alex.dir='down';addItem('movil');setPhase('calling');openPhone();return}

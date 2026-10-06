@@ -1,0 +1,30 @@
+name: Descargar voces de la aventura
+on:
+  push:
+    paths: ['aventura/voces/pendientes.txt']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  voces:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Descargar audios pendientes
+        run: |
+          cd aventura/voces
+          ok=0; fail=0
+          while read -r file url; do
+            [ -z "$file" ] && continue
+            if curl -fsSL --retry 3 -o "$file" "$url"; then ok=$((ok+1)); else echo "FALLO $file"; fail=$((fail+1)); fi
+          done < pendientes.txt
+          echo "Descargados: $ok · Fallos: $fail"
+          : > pendientes.txt
+          node -e 'const fs=require("fs");const m={};for(const f of fs.readdirSync(".").filter(f=>/^(alex|sergio)_[a-z0-9]+\.mp3$/.test(f)))m[f.slice(0,-4)]=f;fs.writeFileSync("voces.json",JSON.stringify(m,null,1));console.log(Object.keys(m).length+" voces en voces.json")'
+      - name: Guardar en el repo
+        run: |
+          git config user.name "voces-bot"
+          git config user.email "voces-bot@users.noreply.github.com"
+          git add aventura/voces
+          git diff --cached --quiet || git commit -m "Voces: audios descargados de ElevenLabs"
+          git push
