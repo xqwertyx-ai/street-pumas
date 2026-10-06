@@ -192,6 +192,7 @@ const SFX={
  block(){tone(900,.06,{vol:.06});noise(.05,{vol:.1,freq:6000,hp:true})},
  jump(){tone(300,.15,{type:'square',vol:.04,slide:300})},
  ko(){tone(400,.9,{type:'sawtooth',vol:.08,slide:-330})},
+ meow(){tone(720,.38,{type:'sawtooth',vol:.04,slide:-300});tone(980,.3,{type:'sine',vol:.05,slide:-350,delay:.03})},
  fight(){tone(196,.2,{vol:.08});tone(262,.35,{vol:.08,delay:.18})},
  roar(){noise(.5,{vol:.2,freq:600});tone(90,.5,{type:'sawtooth',vol:.08,slide:60})},
  blip(f){tone(f,.035,{type:'square',vol:.018})}
@@ -297,8 +298,9 @@ const HS=[
  {id:'silla',n:'Silla gamer',r:[630,300,215,315],w:[740,640],d:'up'},
  {id:'cuadro',n:'Cuadro de marcianitos',r:[1410,405,140,72],w:[1440,622],d:'up'},
  {id:'papelera',n:'Papelera',r:[798,512,58,72],w:[830,622],d:'up'},
+ {id:'missi',n:'Missi',r:[950,486,140,126],w:[900,640],d:'right',cond:()=>S.cat},
 ].map(h=>({...h,area:h.r[2]*h.r[3]})).sort((a,b)=>a.area-b.area);
-function hotAt(x,y){return HS.find(h=>x>=h.r[0]&&x<=h.r[0]+h.r[2]&&y>=h.r[1]&&y<=h.r[1]+h.r[3])}
+function hotAt(x,y){return HS.find(h=>(!h.cond||h.cond())&&x>=h.r[0]&&x<=h.r[0]+h.r[2]&&y>=h.r[1]&&y<=h.r[1]+h.r[3])}
 function clampFloor(x,y){x=Math.max(110,Math.min(1490,x));const maxY=(x>660&&x<1010)?700:648;return[x,Math.max(600,Math.min(maxY,y))]}
 
 const LOOK={
@@ -331,10 +333,10 @@ async function look(h){const L=LOOK[h.id]||['No hay nada interesante.'];const n=
 
 /* ---------- Pistas ---------- */
 const HINTS={
- find_phone:[['alex','¿Dónde habré dejado el móvil? Piensa, Segu, piensa.','confused'],['alex','Si yo fuera un teléfono, me escondería donde paso veinte horas al día…'],['alex','Vale, jugador, te lo digo claro: mira en la cama.','laugh']],
+ find_phone:[['alex','¿Dónde habré dejado el móvil? Piensa, Seguuu, piensa.','confused'],['alex','Si yo fuera un teléfono, me escondería donde paso veinte horas al día…'],['alex','Vale, jugador, te lo digo claro: mira en la cama.','laugh']],
  calling:[['alex','Llama a alguien. Alguno estará tan aburrido como yo.'],['alex','Me quedan contactos en la agenda. Alguien dirá que sí. Estadísticamente.']],
  what_to_do:[['sergio','Si tuviéramos algo con mando… y que no fuera la tele…'],['sergio','Debajo de la tele hay algo que hace siglos que no enciendes.'],['sergio','Vale, lo digo yo: LA PLAY. Dale a la consola.','laugh']],
- inspiration:[['alex','¿Dónde guardaría yo la inspiración? En algún sitio con plumas…'],['sergio','Ese búho hucha lleva años engordando, Segu.'],['sergio','EL BÚHO. Rompe el búho.','laugh']],
+ inspiration:[['alex','¿Dónde guardaría yo la inspiración? En algún sitio con plumas…'],['sergio','Ese búho hucha lleva años engordando, Seguuu.'],['sergio','EL BÚHO. Rompe el búho.','laugh']],
 };
 function buildHint(){
  if(!has('destornillador')&&!S.usedScrew)return['sergio','Los destornilladores viven en cajones. Es ley de vida. Mira el mueble de la izquierda.'];
@@ -372,10 +374,10 @@ const HANDLERS={
  },
  inspiration:{
   async consola(){await say('alex','Déjala. Está descansando. Para siempre.')},
-  async neverita(){await say('sergio','La inspiración no está en la nevera, Segu. Ahí solo hay cosas frías.')},
+  async neverita(){await say('sergio','La inspiración no está en la nevera, Seguuu. Ahí solo hay cosas frías.')},
   async tv(){await say('sergio','Si vuelvo a ver un puma, me hago vegano.')},
   async buho(){
-   await talk([['alex','Mi búho hucha. Mi abuela me dijo que solo lo rompiera en caso de emergencia.'],['sergio','Segu. Mira a tu alrededor. Esto es una emergencia.'],['alex','…Tienes razón.']]);
+   await talk([['alex','Mi búho hucha. Mi abuela me dijo que solo lo rompiera en caso de emergencia.'],['sergio','Seguuu. Mira a tu alrededor. Esto es una emergencia.'],['alex','…Tienes razón.']]);
    await play(alex,'interact',600);SFX.crash();S.owlBroken=true;S.shake=.4;await sleep(700);
    await say('sergio','¡Toma ya! A ver qué escondía el pajarraco.','laugh');openOwl();return true}
  },
@@ -419,11 +421,30 @@ const HANDLERS={
 
 async function interact(h){
  const item=S.sel;S.sel=null;renderInv();S.lastAct=performance.now();
+ if(h.id==='lampara'&&!S.lampUsed){await lampScene();return}
+ if(h.id==='missi'){await missi();return}
  const set=HANDLERS[S.phase]||{};
  if(set[h.id]){const r=await set[h.id](item);if(r===true)return;if(S.phase!=='build')await miss();return}
  if(item){await say('alex',`Usar ${ITEMS[item].toLowerCase()} con ${h.n.toLowerCase()} no tiene ningún sentido. Ni en una aventura gráfica.`,'confused');return}
- if(S.phase==='inspiration'&&Math.random()<.35){await say('sergio','Inspiración, Segu. Céntrate.');await miss();return}
+ if(S.phase==='inspiration'&&Math.random()<.35){await say('sergio','Inspiración, Seguuu. Céntrate.');await miss();return}
  await look(h);await miss();
+}
+
+/* ---------- Lámpara y Missi ---------- */
+async function lampScene(){
+ S.lampUsed=true;await play(alex,'interact',500);SFX.click();S.dark=1;await sleep(700);
+ await say('alex','Vale. Ahora la habitación está igual de desordenada, pero no se nota.','smile');
+ await say('alex','Mejor la enciendo antes de pisar algo.');
+ SFX.click();S.dark=0;S.cat=true;await sleep(250);SFX.meow();await sleep(500);
+ alex.dir=alex.x<960?'right':'left';
+ await say('alex','¡Hostia, Missi, qué susto!','confused');
+}
+async function missi(){
+ const n=S.catTalk=(S.catTalk||0)+1;SFX.meow();
+ if(n===1){await say('alex','¿Y tú de dónde has salido? Llevas aquí todo el juego, ¿verdad?');return}
+ if(n===2&&sergio.visible){await talk([['sergio','¿Desde cuándo tienes gato?','confused'],['alex','Yo no tengo gato. Missi tiene humano.','smile']]);return}
+ if(n===2){await say('alex','Missi no ayuda a buscar nada. Missi supervisa.');return}
+ await say('alex','Miau. Eso es un no.')
 }
 
 /* ---------- Teléfono ---------- */
@@ -444,7 +465,7 @@ const CALLS={
  agui:async()=>{await callLine('agui','Ahora no puedo. Estoy en Hogwarts, en un congreso de magia.');await say('alex','¿Y hay cobertura en Hogwarts?','confused');await callLine('agui','No. Te estoy contestando por lechuza.');hang();await say('alex','…Ese búho de la estantería me está mirando raro.');return 'no'},
  andrea:async()=>{await callLine('andrea','¿Tú estás tonto? Sabes que estoy en California.');await say('alex','Ya, pero por si acaso.');hang();await say('alex','Ni con nueve horas de diferencia me dicen que sí.');return 'no'},
  idoia:async()=>{await callLine('idoia','¡Hola! Sí, sí, me apetece. ¿Puedo ir con los niños?');hang();await sleep(500);await say('alex','…Uy, se ha cortado. Qué mala cobertura hay en esta casa.','smile');return 'no'},
- sergio:async()=>{await callLine('sergio','¿Qué pasa, Segu?');await say('alex','Aquí, viendo un documental de pumas.');await callLine('sergio','¿Otra vez los pumas?');await say('alex','Me he aburrido hasta yo. ¿Te vienes?');await callLine('sergio','Voy para allá.');hang();return 'yes'},
+ sergio:async()=>{await callLine('sergio','¿Qué pasa, Seguuu?');await say('alex','Aquí, viendo un documental de pumas.');await callLine('sergio','¿Otra vez los pumas?');await say('alex','Me he aburrido hasta yo. ¿Te vienes?');await callLine('sergio','Voy para allá.');hang();return 'yes'},
 };
 let calling=false;
 function renderPhone(){const L=$('#phList');L.innerHTML='';CONTACTS.forEach(c=>{const li=document.createElement('li'),b=document.createElement('button');b.innerHTML=`<span>${c.name}</span><span class="st">${c.status==='no'?'✗':c.status==='yes'?'✓':''}</span>`;b.onclick=e=>{e.stopPropagation();dial(c)};li.appendChild(b);L.appendChild(li)})}
@@ -510,7 +531,7 @@ async function arrival(){
  await alex.walkTo(160,628);alex.dir='left';SFX.click();await sleep(400);
  sergio.visible=true;sergio.x=-90;sergio.y=632;sergio.walkTo(330,632);await sleep(250);alex.walkTo(560,630);await sleep(1300);
  alex.dir='left';sergio.dir='right';
- await talk([['sergio','¡Segu!','laugh'],['alex','¡Sergio! Pasa, pasa. No mires el desorden.'],['sergio','¿Qué desorden? Si esto es un museo.','smile'],['sergio','Bueno, ¿y qué hacemos?'],['alex','Ni idea. Mira a ver si se te ocurre algo.','confused']]);
+ await talk([['sergio','¡Seguuu!','laugh'],['alex','¡Sergio! Pasa, pasa. No mires el desorden.'],['sergio','¿Qué desorden? Si esto es un museo.','smile'],['sergio','Bueno, ¿y qué hacemos?'],['alex','Ni idea. Mira a ver si se te ocurre algo.','confused']]);
  setPhase('what_to_do');S.busy=false;
 }
 async function smokeScene(){
@@ -519,7 +540,7 @@ async function smokeScene(){
  await play(alex,'interact',800);
  for(let i=0;i<=40;i++){S.haze=i/40;await sleep(40)}
  cv.style.filter='saturate(1.7) hue-rotate(25deg) contrast(1.05)';
- await talk([['sergio','¿Notas algo?'],['alex','Noto que el póster me está mirando.','confused'],['sergio','El póster siempre te ha mirado, Segu.'],['alex','…','confused']]);
+ await talk([['sergio','¿Notas algo?'],['alex','Noto que el póster me está mirando.','confused'],['sergio','El póster siempre te ha mirado, Seguuu.'],['alex','…','confused']]);
  S.bulb=1;SFX.bulb();await sleep(900);
  await talk([['alex','¡Ya lo tengo! ¡Vamos a construir un ordenador!','laugh'],['sergio','Pero si no tenemos ni idea.','confused'],['alex','Eso no ha frenado nunca a nadie en internet.'],['sergio','Vale. Necesitamos placa base, memoria, procesador y una caja.'],['alex','Y un destornillador. Que yo con las uñas no abro ni un yogur.']]);
  S.bulb=0;cv.style.filter='';for(let i=40;i>=10;i--){S.haze=i/40;await sleep(30)}
@@ -550,6 +571,17 @@ $('#stage').addEventListener('pointermove',e=>{const lb=$('#label');if(S.mode!==
  lb.textContent=h?(S.sel?`Usar ${ITEMS[S.sel]} con ${h.n}`:h.n):'';const r=$('#stage').getBoundingClientRect();lb.style.left=(e.clientX-r.left)+'px';lb.style.top=(e.clientY-r.top)+'px'});
 function followSergio(){if(!sergio.visible||S.mode!=='room')return;const side=alex.x>800?-1:1;const[x,y]=clampFloor(alex.x+side*190,alex.y+4);if(Math.hypot(sergio.x-x,sergio.y-y)>60)sergio.walkTo(x,y).then(()=>{sergio.dir=side>0?'left':'right'})}
 
+/* ---------- Missi (gata atigrada de pecho blanco) ---------- */
+const CAT_MAP=[
+"...k......k.........","..kbk....kbk........","..kbbkkkkbbk........","..kbsbbbbsbk........","..kbgkbbkgbk........",
+"..kbbbpbbbbk........","...kbwwwwbk.........","....kwwwwk..........","...kbwwwwbk.........","..kbswwwwsbk........",
+"..kbbwwwwbbk.....kk.","..kbswwwwsbk....kbk.","..kbbwwwwbbk...ksk..","..kbswwwwsbbk.kbk...","..kbbwwbwwbbkkbk....",
+"..kbbwwbwwbbbbk.....","..kkwwkkwwkkkk......","...kkk..kkk........."];
+const CATCOL={k:'#2b2118',b:'#9a7d5a',s:'#5a4530',w:'#f2ede2',g:'#a6d64a',p:'#e79a9a'};
+const catCv=(blink)=>{const c=document.createElement('canvas');c.width=20;c.height=18;const x=c.getContext('2d');CAT_MAP.forEach((r,j)=>[...r].forEach((ch,i)=>{if(ch==='.')return;x.fillStyle=CATCOL[blink&&ch==='g'?'k':ch];x.fillRect(i,j,1,1)}));return c};
+const CAT_IMG=[catCv(false),catCv(true)];
+const CAT={x:1010,y:612,draw(){const blink=(NOW%4)<.15;ctx.imageSmoothingEnabled=false;ctx.drawImage(CAT_IMG[blink?1:0],Math.round(this.x-60),Math.round(this.y-126),140,126)}};
+
 /* ---------- Dibujo de la habitación ---------- */
 let NOW=0;const smoke=[];
 function drawTV(){const x=1194,y=347,w=198,h=114;
@@ -575,9 +607,10 @@ function drawRoom(){
  if(S.consoleDead&&!S.smokeOff&&Math.random()<(S.phase==='inspiration'||S.phase==='what_to_do'?.5:.12))smoke.push({x:1300+rnd(-20,20),y:510,vx:rnd(-8,8),vy:rnd(-40,-25),r:rnd(6,12),t:0});
  if(S.fridgeOpen){ctx.fillStyle='#1b2a30';ctx.fillRect(548,455,90,110);ctx.fillStyle='rgba(230,245,255,.85)';ctx.fillRect(556,463,74,94);ctx.fillStyle='#4cc3ff';ctx.fillRect(570,505,46,8);ctx.fillStyle='#c8d6dc';ctx.fillRect(520,452,30,116)}
  if(S.pcBuilt){const c=['#ff4d6d','#ffd166','#06d6a0','#4cc3ff','#c77dff'];for(let i=0;i<5;i++){ctx.fillStyle=c[(i+Math.floor(NOW*4))%5];ctx.fillRect(552+i*17,556,10,6)}ctx.fillStyle=`hsla(${NOW*90%360},90%,60%,.22)`;ctx.fillRect(545,450,97,118);ctx.fillStyle='rgba(76,195,255,.15)';ctx.fillRect(525,560,140,40)}
- const actors=[alex,sergio].sort((a,b)=>a.y-b.y);actors.forEach(a=>a.draw());
+ const actors=[alex,sergio];if(S.cat)actors.push(CAT);actors.sort((a,b)=>a.y-b.y).forEach(a=>a.draw());
  for(let i=smoke.length-1;i>=0;i--){const p=smoke[i];p.t+=1/60;p.x+=p.vx/60;p.y+=p.vy/60;p.r+=.25;const a=Math.max(0,.45-p.t*.18);if(a<=0){smoke.splice(i,1);continue}ctx.fillStyle=`rgba(190,190,190,${a})`;ctx.fillRect(p.x-p.r,p.y-p.r,p.r*2,p.r*2)}
  if(S.bulb){const bx=alex.x,by=alex.y-scaleAt(alex.y)*205-60;ctx.fillStyle=`rgba(255,230,120,${.25+.15*Math.sin(NOW*8)})`;ctx.beginPath();ctx.arc(bx,by,46,0,7);ctx.fill();ctx.fillStyle='#ffe66b';ctx.fillRect(bx-16,by-24,32,30);ctx.fillRect(bx-10,by-30,20,6);ctx.fillStyle='#c7c0b0';ctx.fillRect(bx-9,by+6,18,10);ctx.fillStyle='#fff';ctx.fillRect(bx-10,by-18,6,10)}
+ if(S.dark){ctx.fillStyle='#000';ctx.fillRect(0,0,W,H)}
  if(S.haze>0){ctx.save();ctx.globalAlpha=S.haze*.5;for(let i=0;i<14;i++){const x=(i*173+NOW*18*(i%3+1))%1800-100,y=180+((i*97)%420)+Math.sin(NOW+i)*20;ctx.fillStyle='rgba(220,220,230,.35)';ctx.beginPath();ctx.arc(x,y,90+(i%4)*30,0,7);ctx.fill()}ctx.restore()}
 }
 
@@ -595,7 +628,7 @@ function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;NOW=t/1000;
 /* ---------- Arranque y capítulos ---------- */
 $('#autoBtn').onclick=()=>{S.auto=!S.auto;$('#autoBtn').textContent='Auto: '+(S.auto?'sí':'no');$('#autoBtn').setAttribute('aria-pressed',S.auto)};
 $('#start').addEventListener('pointerdown',e=>e.stopPropagation());
-function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false,smokeOff:false,fridgeOpen:0});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
+function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false,smokeOff:false,fridgeOpen:0,lampUsed:false,cat:false,dark:0,catTalk:0});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
 async function begin(ch){ac();reset();$('#start').hidden=true;
  if(ch===1){intro();return}
  if(ch===2){alex.x=1150;alex.y=640;alex.dir='down';addItem('movil');setPhase('calling');openPhone();return}

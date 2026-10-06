@@ -20,7 +20,7 @@ jobs:
           done < pendientes.txt
           echo "Descargados: $ok · Fallos: $fail"
           : > pendientes.txt
-          node -e 'const fs=require("fs");const m={};for(const f of fs.readdirSync(".").filter(f=>/^(alex|sergio)_[a-z0-9]+\.mp3$/.test(f)))m[f.slice(0,-4)]=f;fs.writeFileSync("voces.json",JSON.stringify(m,null,1));console.log(Object.keys(m).length+" voces en voces.json")'
+          node -e 'const fs=require("fs");const m={};for(const f of fs.readdirSync(".").filter(f=>/^(alex|sergio|tv)_[a-z0-9]+\.mp3$/.test(f)))m[f.slice(0,-4)]=f;fs.writeFileSync("voces.json",JSON.stringify(m,null,1));console.log(Object.keys(m).length+" voces en voces.json")'
       - name: Guardar en el repo
         run: |
           git config user.name "voces-bot"
