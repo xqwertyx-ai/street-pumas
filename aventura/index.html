@@ -158,7 +158,8 @@ const META={
 const IMG={};
 function loadImg(k,src){return new Promise(r=>{const i=new Image();i.onload=()=>{IMG[k]=i;r()};i.onerror=()=>r();i.src=src})}
 const MOOD={neutral:0,smile:1,laugh:2,confused:3};
-const faceSrc=(who,m)=>`assets/${who}_face${MOOD[m||'neutral']??0}.png`;
+const AV='20261007b';
+const faceSrc=(who,m)=>`assets/${who}_face${MOOD[m||'neutral']??0}.png?v=${AV}`;
 
 /* ---------- Voces ----------
    Cada frase tiene un id (ver voces/guion.csv). Si existe voces/voces.json con {"id":"archivo.mp3"},
@@ -711,5 +712,8 @@ async function begin(ch){ac();reset();$('#start').hidden=true;MUSIC.play('room')
  goStreetPumas()}
 $('#play').onclick=()=>begin(1);
 document.querySelectorAll('#chap button').forEach(b=>b.onclick=()=>begin(+b.dataset.c));
-Promise.all([loadImg('room','assets/room.jpg'),loadImg('alex','assets/alex_atlas.png'),loadImg('sergio','assets/sergio_atlas.png')]).then(()=>{(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>requestAnimationFrame(loop))});
+async function loadAtlas(k){const m=META[k],want=m.cw*Math.max(...Object.values(m.anims).map(a=>a.n));
+ await loadImg(k,`assets/${k}_atlas.png?v=${AV}`);
+ if(IMG[k]&&IMG[k].naturalWidth!==want)await loadImg(k,`assets/${k}_atlas.png?t=${Date.now()}`)}
+Promise.all([loadImg('room','assets/room.jpg?v='+AV),loadAtlas('alex'),loadAtlas('sergio')]).then(()=>{(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>requestAnimationFrame(loop))});
 </script>
