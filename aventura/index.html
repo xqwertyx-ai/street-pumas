@@ -248,6 +248,7 @@ const MUSIC={ac:null,out:null,tr:null,name:null,step:0,next:0,timer:null,on:true
 const SPK={
  alex:{name:'Alex',color:'#ffcf6b',face:'alex',pitch:210},
  sergio:{name:'Sergio',color:'#7fd6ff',face:'sergio',pitch:170},
+ madre:{name:'Madre · desde la cocina',color:'#f29fb5',tag:'M',bg:'#f29fb5',pitch:260},
  tv:{name:'Narrador',color:'#c7c0b0',tag:'TV',bg:'#c7c0b0',pitch:120},
  sys:{name:'Operadora',color:'#b9c98a',tag:'☎',bg:'#b9c98a',pitch:300},
 };
@@ -504,7 +505,7 @@ const CALLS={
  josep:async()=>{await callLine('josep','Sorry, tío. Ya no fumo.');hang();await sleep(400);await closeup('alex','laugh','*guiño guiño*',1900);return 'no'},
  aida:async()=>{await say('aida','¡Hola, Seg! ¿Cómo estás? ¿Quieres que hagamos algo hoy? Tengo una idea buenísima: podemos pillar ceras de colores, y pinceles, y acuarelas, y rotuladores, y…',null,{audio:'aida.mp3',secs:11});await say('alex','Aida… Aida, te llamo otro día, que esto va para largo.','smile');hang();await say('alex','Cuando acabe la lista de material ya será Navidad.');return 'no'},
  ruiz:async()=>{await say('ruiz','Hola, Seguuu! Quina il·lusió que em truquis! Tinc moltes ganes de veure\'t i arreplegar-te. Avui? Oh, buah, estic molt liada! Ara a les cinc tinc pàdel, i quan acabi he quedat amb la Maria i la Lara, que fa temps que no les veig, i després vaig al cumple del Joanko. Però si el partit acaba d\'hora puc passar a veure\'t dos minuts i mig.',null,{audio:'ruiz.mp3',secs:19.5});hang();await say('alex','Dos minutos y medio. Lo apunto como un «quizás» muy optimista.','confused');return 'no'},
- guillem:async()=>{await callLine('guillem','No puedo, me voy al gym.');await say('alex','¿Otra vez? Si fuiste ayer.');await callLine('guillem','Y mañana también. Hoy toca pierna.');hang();await say('alex','Guillem no se ha saltado nunca un día de pierna. Los planes conmigo, todos.');return 'no'},
+ guillem:async()=>{await callLine('guillem','No puc, me\'n vaig al gimnàs.');await say('alex','¿Otra vez? Si fuiste ayer.');await callLine('guillem','I demà també. Avui toca cama.');hang();await say('alex','Guillem no se ha saltado nunca un día de pierna. Los planes conmigo, todos.');return 'no'},
  guevara:async()=>{await callLine('guevara','Impossible! Me\'n vaig a la Bisbal d\'Empordà, que toquen els Punkarracats!');await say('alex','¿Un martes?','confused');await callLine('guevara','El punk no entén de calendaris.');hang();return 'no'},
  sara:async()=>{await callLine('sara','No puedo, estoy con el Nil.');await say('alex','Vale. Saluda al Nil.');await callLine('sara','Dice el Nil que hola.');hang();return 'no'},
  aaron:async()=>{await callLine('aaron','Tio, acabo de sortir a fer una volta amb la bici.');await say('alex','¿Y por dónde andas?');await callLine('aaron','Tornant de Saragossa.');await say('alex','Una vuelta. A Zaragoza.','confused');await callLine('aaron','Curteta, per escalfar.');hang();return 'no'},
@@ -577,6 +578,7 @@ async function arrival(){
  await sleep(500);SFX.bell();await sleep(1500);
  await say('alex','¡No voy!');
  await closeup('alex','confused','',1500);
+ await say('madre','¡Aaaalex, la puerta!');
  await say('alex','…Bueno, sí voy.','smile');
  await alex.walkTo(160,628);alex.dir='left';SFX.click();await sleep(400);
  sergio.visible=true;sergio.x=-90;sergio.y=632;sergio.walkTo(330,632);await sleep(250);alex.walkTo(560,630);await sleep(1300);
