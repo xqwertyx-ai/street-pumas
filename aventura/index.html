@@ -152,8 +152,8 @@ const rnd=(a,b)=>a+Math.random()*(b-a);
 
 /* ---------- Assets ---------- */
 const META={
- alex:{"cw":105,"ch":207,"anims":{"idle_down":{"row":0,"n":3},"idle_left":{"row":1,"n":3},"idle_right":{"row":2,"n":3},"idle_up":{"row":3,"n":4},"walk_down":{"row":4,"n":3},"walk_left":{"row":5,"n":3},"walk_right":{"row":6,"n":3},"walk_up":{"row":7,"n":4},"run_right":{"row":8,"n":3},"run_left":{"row":9,"n":3},"interact":{"row":10,"n":3},"pickup":{"row":11,"n":3},"phone":{"row":12,"n":3}}},
- sergio:{"cw":110,"ch":200,"anims":{"idle_down":{"row":0,"n":3},"idle_left":{"row":1,"n":3},"idle_right":{"row":2,"n":3},"idle_up":{"row":3,"n":4},"walk_down":{"row":4,"n":3},"walk_left":{"row":5,"n":3},"walk_right":{"row":6,"n":3},"walk_up":{"row":7,"n":4},"run_right":{"row":8,"n":3},"run_left":{"row":9,"n":3},"interact":{"row":10,"n":3},"pickup":{"row":11,"n":3},"phone":{"row":12,"n":3}}}
+ alex:{"cw":160,"ch":224,"base":8,"k":1.076,"anims":{"idle_down":{"row":0,"n":5,"fps":4},"idle_left":{"row":1,"n":8,"fps":4},"idle_right":{"row":2,"n":8,"fps":4},"idle_up":{"row":3,"n":4,"fps":4},"walk_down":{"row":4,"n":5,"fps":10},"walk_left":{"row":5,"n":8,"fps":10},"walk_right":{"row":6,"n":8,"fps":10},"walk_up":{"row":7,"n":4,"fps":10},"run_down":{"row":8,"n":5,"fps":12},"run_left":{"row":9,"n":8,"fps":12},"run_right":{"row":10,"n":8,"fps":12},"run_up":{"row":11,"n":4,"fps":12},"interact_left":{"row":12,"n":3,"fps":6},"interact_right":{"row":13,"n":3,"fps":6},"pickup_left":{"row":14,"n":2,"fps":6},"pickup_right":{"row":15,"n":2,"fps":6},"phone":{"row":16,"n":3,"fps":3,"loop":1},"call":{"row":17,"n":1,"fps":1}}},
+ sergio:{"cw":176,"ch":224,"base":8,"k":1.006,"anims":{"idle_down":{"row":0,"n":3,"fps":4},"idle_left":{"row":1,"n":6,"fps":4},"idle_right":{"row":2,"n":6,"fps":4},"idle_up":{"row":3,"n":4,"fps":4},"walk_down":{"row":4,"n":3,"fps":10},"walk_left":{"row":5,"n":6,"fps":10},"walk_right":{"row":6,"n":6,"fps":10},"walk_up":{"row":7,"n":4,"fps":10},"run_down":{"row":8,"n":3,"fps":12},"run_left":{"row":9,"n":6,"fps":12},"run_right":{"row":10,"n":6,"fps":12},"run_up":{"row":11,"n":4,"fps":12},"interact_left":{"row":12,"n":3,"fps":6},"interact_right":{"row":13,"n":3,"fps":6},"pickup_left":{"row":14,"n":2,"fps":6},"pickup_right":{"row":15,"n":2,"fps":6},"phone":{"row":16,"n":3,"fps":3,"loop":1},"call":{"row":17,"n":1,"fps":1}}}
 };
 const IMG={};
 function loadImg(k,src){return new Promise(r=>{const i=new Image();i.onload=()=>{IMG[k]=i;r()};i.onerror=()=>r();i.src=src})}
@@ -284,11 +284,14 @@ class Actor{
   const s=Math.min(d,this.speed*dt*scaleAt(this.y)/1.9);this.x+=dx/d*s;this.y+=dy/d*s;
   this.dir=Math.abs(dx)>Math.abs(dy)*.9?(dx>0?'right':'left'):(dy>0?'down':'up')}
  draw(){if(!this.visible||!IMG[this.key])return;const m=META[this.key];let name,fi;
-  if(this.anim){name=this.anim;const a=m.anims[name];fi=Math.min(a.n-1,Math.floor(this.ft*6))}
-  else if(this.tx!=null){name='walk_'+this.dir;const a=m.anims[name];fi=Math.floor(this.ft*8)%a.n}
+  if(this.anim){name=this.anim;const side=this.dir==='left'||this.dir==='right';
+   if(m.anims[name+'_'+this.dir])name+='_'+this.dir;else if(!m.anims[name])name=(side?'interact_':'idle_')+this.dir;
+   const a=m.anims[name],t=Math.floor(this.ft*(a.fps||6));
+   fi=a.loop!=null?(t<a.n?t:a.loop+(t-a.loop)%(a.n-a.loop)):name.startsWith('idle')?t%a.n:Math.min(a.n-1,t)}
+  else if(this.tx!=null){name='walk_'+this.dir;const a=m.anims[name];fi=Math.floor(this.ft*a.fps)%a.n}
   else{name='idle_'+this.dir;const a=m.anims[name];fi=Math.floor(this.ft*1.6)%a.n}
-  const a=m.anims[name],s=scaleAt(this.y),w=m.cw*s,h=m.ch*s;
-  ctx.drawImage(IMG[this.key],fi*m.cw,a.row*m.ch,m.cw,m.ch,Math.round(this.x-w/2),Math.round(this.y-h),Math.round(w),Math.round(h))}
+  const a=m.anims[name],s=scaleAt(this.y)*m.k,w=m.cw*s,h=m.ch*s;
+  ctx.drawImage(IMG[this.key],fi*m.cw,a.row*m.ch,m.cw,m.ch,Math.round(this.x-w/2),Math.round(this.y-(m.ch-m.base)*s),Math.round(w),Math.round(h))}
 }
 const alex=new Actor('alex',1170,628,'up'), sergio=new Actor('sergio',-120,628,'right');sergio.visible=false;
 async function play(actor,anim,ms=700){actor.anim=anim;actor.ft=0;await sleep(ms);actor.anim=null}
@@ -544,7 +547,7 @@ async function dial(c){
  if(calling||S.phase!=='calling')return;
  if(c.status==='no'&&REDIAL[c.id]){calling=true;await REDIAL[c.id]();calling=false;return}
  if(c.id==='sergio'&&CONTACTS.some(x=>x.id!=='sergio'&&!x.status)){calling=true;await say('alex',SERGIO_LATER[(S.sergioTry=(S.sergioTry||0)+1)%3],'smile');calling=false;return}calling=true;S.lastAct=performance.now();
- $('#phList').hidden=true;$('#phSms').hidden=true;$('#phTitle').textContent='Llamando';const pc=$('#phCall');pc.hidden=false;pc.innerHTML=`<span>Llamando a</span><b>${c.name}</b><span>· · ·</span>`;
+ $('#phList').hidden=true;$('#phSms').hidden=true;$('#phTitle').textContent='Llamando';alex.anim='call';alex.ft=0;const pc=$('#phCall');pc.hidden=false;pc.innerHTML=`<span>Llamando a</span><b>${c.name}</b><span>· · ·</span>`;
  SFX.dial();await sleep(600);const rings=c.id==='sergio'?3:c.id==='skater'&&c.status?1:2;for(let i=0;i<rings;i++){SFX.ring();await sleep(1250)}
  if(!(c.id==='skater'&&c.status)){pc.innerHTML=`<span>En llamada</span><b>${c.name}</b><span>00:0${1+Math.floor(Math.random()*8)}</span>`}
  const r=await CALLS[c.id](c);if(r)c.status=r;await sleep(500);
