@@ -13,7 +13,12 @@
   color-scheme:dark;
 }
 [hidden]{display:none!important}
-html,body{height:100%}
+html,body{height:100%;-webkit-tap-highlight-color:transparent}
+body{-webkit-user-select:none;user-select:none}
+*::selection{background:transparent}
+#cv:focus,.stage:focus{outline:none}
+:fullscreen body,body.fs{padding-block:6px}
+:fullscreen .stage{width:min(100%, calc((100dvh - 48px) * 2))}
 body{background:var(--ink);color:var(--text);font-family:var(--body);padding-inline:16px;padding-block:12px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:10px;overflow-x:hidden}
 .stage{position:relative;width:min(100%, calc((100dvh - 96px) * 2));aspect-ratio:2/1;max-width:100%;container-type:inline-size;background:#000;border:2px solid var(--line);border-radius:6px;overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:manipulation}
 #cv{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;cursor:crosshair;transform-origin:80.6% 50.6%;transition:transform 1.6s cubic-bezier(.6,0,.4,1), filter 2s}
@@ -137,7 +142,7 @@ body{background:var(--ink);color:var(--text);font-family:var(--body);padding-inl
 
 </div>
 <div class="foot" id="foot">
-  <span id="footTx">Versión con subtítulos · las voces llegarán más adelante</span>
+  <button id="fsBtn" aria-pressed="false">Pantalla completa</button>
   <button id="autoBtn" aria-pressed="true">Auto: sí</button>
   <button id="musicBtn" aria-pressed="true">Música: sí</button>
 </div>
@@ -158,7 +163,7 @@ const META={
 const IMG={};
 function loadImg(k,src){return new Promise(r=>{const i=new Image();i.onload=()=>{IMG[k]=i;r()};i.onerror=()=>r();i.src=src})}
 const MOOD={neutral:0,smile:1,laugh:2,confused:3};
-const AV='20261007b';
+const AV='20261007c';
 const faceSrc=(who,m)=>`assets/${who}_face${MOOD[m||'neutral']??0}.png?v=${AV}`;
 
 /* ---------- Voces ----------
@@ -699,6 +704,15 @@ function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;NOW=t/1000;
 
 /* ---------- Arranque y capítulos ---------- */
 $('#musicBtn').onclick=()=>{MUSIC.on=!MUSIC.on;$('#musicBtn').textContent='Música: '+(MUSIC.on?'sí':'no');$('#musicBtn').setAttribute('aria-pressed',MUSIC.on);MUSIC.ensure()&&MUSIC.level(false)};
+function fsSync(){const on=!!(document.fullscreenElement||document.webkitFullscreenElement);$('#fsBtn').textContent=on?'Salir de pantalla completa':'Pantalla completa';$('#fsBtn').setAttribute('aria-pressed',on)}
+function toggleFS(){const d=document,el=d.documentElement;
+ if(d.fullscreenElement||d.webkitFullscreenElement){(d.exitFullscreen||d.webkitExitFullscreen).call(d)}
+ else{const f=el.requestFullscreen||el.webkitRequestFullscreen;if(f){const r=f.call(el,{navigationUI:'hide'});r&&r.catch&&r.catch(()=>{})}}}
+$('#fsBtn').onclick=toggleFS;
+document.addEventListener('fullscreenchange',fsSync);document.addEventListener('webkitfullscreenchange',fsSync);
+if(!(document.documentElement.requestFullscreen||document.documentElement.webkitRequestFullscreen))$('#fsBtn').hidden=true;
+document.addEventListener('keydown',e=>{if((e.key==='f'||e.key==='F')&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!/INPUT|TEXTAREA/.test(e.target.tagName))toggleFS()});
+$('#stage').addEventListener('mousedown',e=>{if(!e.target.closest('button,a'))e.preventDefault()});
 $('#autoBtn').onclick=()=>{S.auto=!S.auto;$('#autoBtn').textContent='Auto: '+(S.auto?'sí':'no');$('#autoBtn').setAttribute('aria-pressed',S.auto)};
 $('#start').addEventListener('pointerdown',e=>e.stopPropagation());
 function reset(){Object.assign(S,{mode:'room',busy:false,tvOn:false,tvGame:false,owlBroken:false,consoleDead:false,consoleOn:false,pcBuilt:false,haze:0,bulb:0,inv:[],sel:null,looks:{},usedScrew:false,drawerTry:0,gotBox:false,smokeOff:false,fridgeOpen:0,lampUsed:false,cat:false,dark:0,catTalk:0});cv.style.filter='';cv.style.transform='';sergio.visible=false;alex.anim=null;alex.tx=null;$('#phone').hidden=true;$('#owlbox').hidden=true;if(D.res)finishLine();$('#stage').classList.remove('fighting');$('#hud').hidden=false;renderInv()}
