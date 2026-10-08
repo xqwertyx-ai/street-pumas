@@ -176,7 +176,19 @@ function lineId(who,text){let h=0;for(const c of who+text)h=(h*31+c.charCodeAt(0
 
 /* ---------- Sonido sintetizado ---------- */
 let AC=null;
-function ac(){if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}return AC}
+function ac(){if(!AC){try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}try{AC=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}if(AC&&AC.state!=='running'&&AC.state!=='closed'){try{AC.resume()}catch(e){}}return AC}
+/* iOS: desbloquear el audio en cada toque y al volver a la pestaña */
+let _unlocked=false;
+function unlockAudio(){const a=ac();if(!a)return;if(!_unlocked){try{const b=a.createBuffer(1,1,22050),src=a.createBufferSource();src.buffer=b;src.connect(a.destination);src.start(0);_unlocked=true}catch(e){}}}
+['pointerdown','touchend','click','keydown'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true,passive:true}));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&AC)ac()});
+/* Voces con Web Audio (en iPhone, new Audio() fuera de un toque no suena y corta el resto) */
+const VBUF={},VLOAD={};
+function loadVoice(file){if(VBUF[file])return Promise.resolve(VBUF[file]);if(VLOAD[file])return VLOAD[file];const a=ac();if(!a)return Promise.reject('noac');
+ VLOAD[file]=fetch('voces/'+file).then(r=>{if(!r.ok)throw r.status;return r.arrayBuffer()}).then(ab=>new Promise((ok,ko)=>{const pr=a.decodeAudioData(ab,ok,ko);pr&&pr.catch&&pr.catch(ko)})).then(b=>{VBUF[file]=b;delete VLOAD[file];return b}).catch(e=>{delete VLOAD[file];throw e});return VLOAD[file]}
+function playVoice(file){const v={stopped:false,src:null,onended:null,onfail:null,pause(){this.stopped=true;try{this.src&&this.src.stop()}catch(e){}}};
+ loadVoice(file).then(buf=>{if(v.stopped)return;const a=ac(),src=a.createBufferSource(),g=a.createGain();g.gain.value=1;src.buffer=buf;src.connect(g).connect(a.destination);src.onended=()=>{if(!v.stopped&&v.onended)v.onended()};v.src=src;src.start()}).catch(()=>{if(!v.stopped&&v.onfail)v.onfail()});
+ return v}
 function tone(f,d,o={}){const a=ac();if(!a)return;const t=a.currentTime+(o.delay||0),os=a.createOscillator(),g=a.createGain();os.type=o.type||'square';os.frequency.setValueAtTime(f,t);if(o.slide)os.frequency.exponentialRampToValueAtTime(Math.max(30,f+o.slide),t+d);g.gain.setValueAtTime(o.vol??.07,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);os.connect(g).connect(a.destination);os.start(t);os.stop(t+d+.05)}
 function noise(d,o={}){const a=ac();if(!a)return;const t=a.currentTime+(o.delay||0),b=a.createBuffer(1,Math.max(1,a.sampleRate*d|0),a.sampleRate),x=b.getChannelData(0);for(let i=0;i<x.length;i++)x[i]=Math.random()*2-1;const s=a.createBufferSource();s.buffer=b;const f=a.createBiquadFilter();f.type=o.hp?'highpass':'lowpass';f.frequency.value=o.freq||1500;const g=a.createGain();g.gain.setValueAtTime(o.vol??.15,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);s.connect(f).connect(g).connect(a.destination);s.start(t)}
 const SFX={
@@ -311,7 +323,7 @@ function say(who,text,mood,opts={}){
   D.res=res;D.full=text;D.i=0;D.done=false;
   const pf=$('#dlgPf');pf.style.background=sp.bg||'';pf.innerHTML=sp.face?`<img src="${faceSrc(sp.face,mood)}" alt="">`:`<span class="tag">${sp.tag}</span>`;
   $('#dlgNm').textContent=sp.name+(sp.phone?' · al teléfono':'');$('#dlgNm').style.color=sp.color;$('#dlgLn').textContent='';$('#dlg').hidden=false;
-  D.audio=null;if(file){try{D.audio=new Audio('voces/'+file);MUSIC.level(true);D.audio.onended=()=>{D.audio=null;if(D.done)finishLine();else D.ended=true};D.audio.play().catch(()=>{D.audio=null})}catch(e){D.audio=null}}
+  D.audio=null;if(file&&ac()){const v=playVoice(file);D.audio=v;MUSIC.level(true);v.onended=()=>{if(D.audio!==v)return;D.audio=null;if(D.done)finishLine();else D.ended=true};v.onfail=()=>{if(D.audio!==v)return;D.audio=null;MUSIC.level(false);if(D.done&&S.auto)D.timer=setTimeout(finishLine,1100+D.full.length*42)}}
   D.ended=false;
   if(text.length>110){const segs=splitSegs(text),total=(opts.secs||text.length/14)*1000;let i=0;D.done=true;$('#dlgLn').textContent=segs[0];
    const step=()=>{if(D.res!==res)return;i++;if(i<segs.length){$('#dlgLn').textContent=segs[i];D.segTimer=setTimeout(step,total*segs[i].length/text.length)}else if(!D.audio&&S.auto)D.timer=setTimeout(finishLine,1200)};
