@@ -6871,9 +6871,12 @@ class AudioManager {
     this.lastPlay = new Map();
     this.unlocked = false;
     const unlock = () => this.unlock();
-    // móvil: iOS/Android solo dejan arrancar el audio dentro de un gesto real (touchend/click cuentan; pointerdown no siempre)
-    for (const ev of ['pointerdown', 'touchstart', 'touchend', 'click', 'keydown']) window.addEventListener(ev, unlock, { capture: true });
+    // móvil: iOS/Android solo dejan arrancar el audio dentro de un gesto real (touchend/click cuentan; pointerdown no siempre).
+    // En iPhone se escucha cada gesto hasta que el audio está de verdad sonando (Safari lo suspende a menudo).
+    for (const ev of ['pointerdown', 'touchstart', 'touchend', 'pointerup', 'click', 'keydown']) window.addEventListener(ev, unlock, { capture: true, passive: true });
     document.addEventListener('visibilitychange', () => { if (document.hidden) this._sleep(); else this._resume(); });
+    window.addEventListener('pageshow', () => this._resume());
+    window.addEventListener('focus', () => this._resume());
     // al cerrar o cambiar de página (o al salir con la tecla Inicio de la tele) que no se quede sonando nada
     window.addEventListener('pagehide', () => this._sleep());
   }
@@ -6896,11 +6899,37 @@ class AudioManager {
     this.ac = null; this.music = null;
   }
 
+  get running() { return !!this.ac && this.ac.state === 'running'; }
+
   _resume() {
-    if (this.dead) return;
-    if (this.ac && this.ac.state !== 'running') this.ac.resume().catch(() => {});
+    if (this.dead || document.hidden) return;
     if (this._musicWasPlaying && this.musicEl) { this._musicWasPlaying = false; this.musicEl.play().catch(() => {}); }
-    if (this.silentEl && this.silentEl.paused) this.silentEl.play().catch(() => {});
+    // Safari usa también el estado "interrupted" (llamada, otra app, Siri…): cualquier estado que no sea "running" se reanuda
+    if (this.ac && this.ac.state !== 'running') this.ac.resume().then(() => this._kick()).catch(() => {});
+    if (this.silentEl && this.silentEl.paused) this.silentEl.play().then(() => { if (this.ac && this.ac.state !== 'running') this.ac.resume().catch(() => {}); }).catch(() => {});
+  }
+
+  // iOS: reproducir un sonido vacío dentro del gesto termina de "desbloquear" el contexto de audio
+  _kick() {
+    try {
+      const b = this.ac.createBuffer(1, 1, this.ac.sampleRate);
+      const src = this.ac.createBufferSource(); src.buffer = b; src.connect(this.ac.destination); src.start(0);
+    } catch { /* nada */ }
+  }
+
+  // WAV de silencio de verdad (1 s): el audio HTML vacío (0 muestras) no llega a sonar en iPhone y entonces
+  // no sirve para saltarse el interruptor de silencio
+  static silentWav() {
+    const rate = 8000, n = rate, buf = new Uint8Array(44 + n);
+    const dv = new DataView(buf.buffer);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) buf[o + i] = t.charCodeAt(i); };
+    str(0, 'RIFF'); dv.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, rate, true); dv.setUint32(28, rate, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true);
+    str(36, 'data'); dv.setUint32(40, n, true);
+    buf.fill(128, 44); // 8 bits sin signo: 128 = silencio
+    let bin = ''; for (let i = 0; i < buf.length; i += 4096) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 4096));
+    return 'data:audio/wav;base64,' + btoa(bin);
   }
 
   // Prepara la síntesis de voz (iOS exige que la primera locución salga de un gesto) y el canal multimedia
@@ -6911,11 +6940,12 @@ class AudioManager {
     try {
       // audio HTML silencioso en bucle: en iOS saca el Web Audio del canal de "timbre" (que el interruptor de silencio corta)
       if (!this.silentEl) {
-        const el = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=');
-        el.loop = true; el.volume = 0.01; el.setAttribute('playsinline', '');
+        const el = new Audio(AudioManager.silentWav());
+        el.loop = true; el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', ''); el.preload = 'auto';
         this.silentEl = el;
       }
-      this.silentEl.play().catch(() => {});
+      // al arrancar el audio HTML, iOS puede "interrumpir" el contexto de Web Audio: se reanuda justo después
+      this.silentEl.play().then(() => { if (this.ac && this.ac.state !== 'running') this.ac.resume().catch(() => {}); }).catch(() => {});
     } catch { /* sin audio HTML */ }
     try {
       const ss = window.speechSynthesis;
@@ -6930,13 +6960,20 @@ class AudioManager {
 
   unlock() {
     if (this.dead) return;
-    if (this.unlocked) { this._resume(); if (!this.speechPrimed) this._primeMobile(); return; }
+    if (this.unlocked) {
+      // mientras no suene de verdad, cada gesto vuelve a intentarlo (y vuelve a poner en marcha el audio HTML)
+      if (this.ac.state !== 'running' || (this.silentEl && this.silentEl.paused)) { this._primeMobile(); this._resume(); this._kick(); }
+      if (!this.speechPrimed) this._primeMobile();
+      return;
+    }
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       this._primeMobile();
       this.ac = new AC();
       if (this.ac.state !== 'running') this.ac.resume().catch(() => {});
+      this._kick();
+      this.ac.onstatechange = () => { this.state = this.ac.state; };
       this.master = this.ac.createGain();
       this.musicBus = this.ac.createGain();
       this.sfxBus = this.ac.createGain();
@@ -6988,7 +7025,7 @@ class AudioManager {
   _playBuffer(buf, bus, vol = 1, rate = 1) {
     const src = this.ac.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
     const g = this.ac.createGain(); g.gain.value = vol;
-    src.connect(g); g.connect(bus); src.start();
+    src.connect(g); g.connect(bus); src.start(0);
   }
 
   // Efecto de sonido: archivo real si existe, si no síntesis
@@ -7023,7 +7060,7 @@ class AudioManager {
   }
 
   _stopVoices() {
-    for (const s of this.voiceSrcs || []) { try { s.stop(); } catch { /* ya parada */ } }
+    for (const s of this.voiceSrcs || []) { try { s.stop(0); } catch { /* ya parada */ } }
     this.voiceSrcs = []; this.voiceTail = 0;
     try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch { /* nada */ }
   }
@@ -8383,7 +8420,9 @@ class TitleScene {
       if (Math.floor(this.t / 30) % 2 === 0) text(ctx, 'PULSA CUALQUIER BOTÓN · TOCA LA PANTALLA', W / 2, 360, { size: 20, color: COLORS.gold, lw: 5 });
       text(ctx, '16 Pumas · 4 jefes · lugares míticos', W / 2, 400, { size: 15, color: COLORS.dim, lw: 4 });
     } else this.menu.draw(ctx);
-    text(ctx, 'v0.22', W - 12, GAME.height - 14, { size: 11, align: 'right', color: 'rgba(255,255,255,0.35)' });
+    text(ctx, 'v0.23', W - 12, GAME.height - 14, { size: 11, align: 'right', color: 'rgba(255,255,255,0.35)' });
+    // aviso si el navegador aún no deja sonar el audio (típico en iPhone hasta el primer toque)
+    if (this.t > 60 && !this.game.audio.running) text(ctx, 'SIN SONIDO: TOCA LA PANTALLA PARA ACTIVARLO', W / 2, GAME.height - 14, { size: 12, color: COLORS.gold, lw: 3 });
   }
 }
 
@@ -11891,6 +11930,7 @@ class SettingsScene {
       { label: 'Música', ...vol('musicVolume') },
       { label: 'Efectos', ...vol('sfxVolume') },
       { label: 'Voces', ...opt('voices', [true, false], (v) => (v ? 'Sí' : 'No')) },
+      { label: 'Probar sonido', value: () => (g.audio.running ? 'Activo' : 'Bloqueado'), action: () => { g.audio.unlock(); g.audio.play('ko'); g.audio.announce('fight'); } },
       { label: 'Controles táctiles', ...opt('touchControls', ['auto', 'on', 'off'], (v) => ({ auto: 'Auto', on: 'Siempre', off: 'Nunca' }[v])) },
       { label: 'Pantalla completa', value: () => (isFullscreen() ? 'Sí' : 'No'), action: () => toggleFullscreen(), left: () => toggleFullscreen(), right: () => toggleFullscreen() },
       { label: 'Mostrar FPS', ...opt('showFps', [false, true], (v) => (v ? 'Sí' : 'No')) },
@@ -11902,7 +11942,7 @@ class SettingsScene {
       { label: 'Código secreto', value: () => (BOSSES.every((b) => S.isUnlocked(b.id)) ? 'Todo abierto' : ''), action: () => this._secret() },
       { label: 'Restablecer ajustes', action: () => { const u = S.load().unlocks; S.reset(); S.load().unlocks.push(...u); S.save(); g.input.setKeyboardOverride(null); g.audio.applyVolumes(); } },
       { label: 'VOLVER', action: () => g.goto('title') },
-    ], { y: 78, w: 470, h: 28, gap: 2, onBack: () => g.goto('title') });
+    ], { y: 72, w: 470, h: 25, gap: 2, onBack: () => g.goto('title') });
   }
 
   async _secret() {
@@ -11972,7 +12012,7 @@ class SettingsScene {
   render(ctx) {
     const W = GAME.width;
     menuBackground(ctx, this.t, { c1: '#0f1430', c2: '#05020a', ray: 'rgba(120,120,255,0.05)' });
-    titleText(ctx, 'AJUSTES', W / 2, 48, 54);
+    titleText(ctx, 'AJUSTES', W / 2, 38, 46);
     this.menu.draw(ctx);
     if (this.remapIndex >= 0) {
       ctx.fillStyle = 'rgba(5,2,10,0.85)'; ctx.fillRect(0, 0, W, GAME.height);
